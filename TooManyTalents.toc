@@ -1,0 +1,28 @@
+## Interface: 16001
+## Title: TooManyTalents
+## Author: LaryIsland
+## Version: @project-version@
+## Notes: The game's talent window with templates, targets, sharing and inspecting, a more compact layout, and Talented's old look
+## Category: Interface Enhancements
+## IconTexture: Interface\Icons\Ability_Marksmanship
+## SavedVariables: TooManyTalentsDB
+## OptionalDeps: Ace3
+# Our window is built from the talent window's own templates, which live in this load-on-demand addon.
+## Dependencies: Blizzard_PlayerSpells
+
+embeds.xml
+Locales\enUS.lua
+Core.lua
+Tree.lua
+Templates.lua
+Apply.lua
+Share.lua
+UI\Frame.lua
+UI\Layout.lua
+UI\TalentedStyle.lua
+UI\Target.lua
+UI\Flyout.lua
+UI\Menus.lua
+UI\Options.lua
+UI\Frame.xml
+Commands.lua
