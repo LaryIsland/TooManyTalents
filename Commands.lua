@@ -1,7 +1,7 @@
 local _, ns = ...
 local L = ns.L
 
--- /tmt toggles the window; /tmt options opens it with its options beside it (design document 5.11).
+-- /tmt toggles the window; /tmt options opens it with its options beside it.
 SLASH_TOOMANYTALENTS1 = "/tmt"
 SLASH_TOOMANYTALENTS2 = "/toomanytalents"
 SlashCmdList.TOOMANYTALENTS = function(input)

@@ -1,18 +1,37 @@
 local _, ns = ...
 
--- Where everything in the window goes: the two spacing sliders (design document 5.1, 5.2), and the bottom bar, search
--- box and tab row options (5.10). With the defaults it's Blizzard's layout exactly.
+-- Where everything in the window goes: the two spacing sliders, and the bottom bar, search
+-- box and tab row options. With the defaults it's Blizzard's layout exactly.
 --
--- Talent positions are in the game's units: tenths of a pixel, talents 600 apart (design document 3).
+-- Talent positions are in the game's units: tenths of a pixel, talents 600 apart.
 
 local Frame = TooManyTalentsFrameMixin
 
--- Blizzard's sizes (Camelot Blizzard_PlayerSpellsFrame.xml and Blizzard_ClassTalentsFrame.xml).
-local WINDOW_WIDTH, WINDOW_HEIGHT = 1218, 708
-local FRAME_WIDTH, FRAME_HEIGHT = 1212, 681
-local BACKGROUND_HEIGHT = 701
+-- Blizzard's sizes for the window, the talent panel and its background (Camelot Blizzard_PlayerSpellsFrame.xml and
+-- Blizzard_ClassTalentsFrame.xml), as UI/Frame.xml sets them: read from the frames when the panel loads, before any
+-- layout changes them (Frame:ReadBlizzardSizes), so they're only written down in the XML.
+local WINDOW_WIDTH, WINDOW_HEIGHT, FRAME_WIDTH, FRAME_HEIGHT, BACKGROUND_HEIGHT
+
+function Frame:ReadBlizzardSizes()
+	WINDOW_WIDTH, WINDOW_HEIGHT = self:GetParent():GetSize()
+	FRAME_WIDTH, FRAME_HEIGHT = self:GetSize()
+	BACKGROUND_HEIGHT = self.Background:GetHeight()
+end
+
 local TOP_STRIP = 70
--- Without the bottom bar the art reaches the frame's bottom, so its border meets the window's (0.6.2: 4 left a gap).
+-- The inner border (Talents-inner-frame-c60) reaches this far past the class art on the sides and at top and bottom;
+-- the top ornaments hang this far below its top edge (Frame.xml, from Blizzard's anchors).
+local BORDER_X, BORDER_Y, ORNAMENT_Y = 2, 4, -4
+-- The top ornaments are cut this far in from the border's ends when the window is narrower.
+local ORNAMENT_INSET = 8
+-- Blizzard's places: the unspent points box from the border's top right, and the spec control (Active / Activate)
+-- below the border's top.
+local POINTS_X, POINTS_TOP, SPEC_Y = -20, -6, -20
+-- The tabs' bottom edge from the border's top, the search box's, and the search options arrow beside it.
+local TABS_Y, SEARCH_Y, ARROW_GAP, ARROW_Y = -4, 4, 3, -2
+-- Apply from the background's bottom with the bottom bar, and from the art's bottom in the corner without it.
+local APPLY_BAR_Y, APPLY_CORNER_Y = 8, 12
+-- Without the bottom bar the art reaches the frame's bottom, so its border meets the window's.
 local BOTTOM_STRIP, BOTTOM_STRIP_REMOVED = 36, 0
 local BOTTOM_PADDING_REMOVED = 4
 -- Without the bottom bar, this much of the empty art under the trees' last row goes too (it's about 45 below it).
@@ -40,19 +59,19 @@ local POINTS_BOX_WIDTH = 53
 -- The strip the tabs sit in, between the title bar (it covers the background's top 18) and the border (66 below the
 -- background's top).
 local TAB_STRIP_SHOWN = 48
--- The points' middle in the tab row, above the border's top: the box's bottom edge on the border's line (the user's
--- placing, 14 Nov). The box's visible height (Talents-Square-Box-c60's frame, 36.5 of its 45); the strip is trimmed
+-- The points' middle in the tab row, above the border's top: the box's bottom edge on the border's line. The box's
+-- visible height (Talents-Square-Box-c60's frame, 36.5 of its 45); the strip is trimmed
 -- to it, so its edges touch the title bar and the border alike.
 local POINTS_Y, POINTS_BOX_HEIGHT = 13, 36
 -- At the smallest space between trees, one empty column is left between them.
 local MIN_TREE_GAP = 1200
 local APPLY_WIDTH, APPLY_TEXT_PADDING = 164, 40
--- In the corner (no bottom bar): in from the art's left edge, and how many points the sliders take off together
+-- In the corner (no bottom bar): in from the art's right edge, and how many points the sliders take off together
 -- before it reads just "Apply".
-local APPLY_CORNER_X, APPLY_SHORT_AT = 16, 20
--- Above the talent buttons (ButtonsParent's level plus about 500), below the choice flyout (2000).
-local CORNER_BUTTON_LEVEL = 900
-
+-- 13 in from the right as it's 12 up from the bottom, which looks even.
+local APPLY_CORNER_X, APPLY_SHORT_AT = 13, 80
+-- Between Apply and Undo: Blizzard's in the bottom bar, 5 closer in the corner.
+local UNDO_GAP, UNDO_GAP_CORNER = 14, 9
 local function AtlasSize(atlas)
 	local info = C_Texture.GetAtlasInfo(atlas)
 	return info and info.width or 0, info and info.height or 0
@@ -102,6 +121,9 @@ local function Compute(model, gapPercent, spacingPercent, panX)
 	layout.shrinkY = (model.bottom - model.top) * (1 - scale) / 10
 	return layout
 end
+
+-- Not called by the addon itself; kept for testing the sliders' maths.
+ns.LayoutCompute = Compute
 
 -- The same layout with every tree (and the dividers between them) moved right by extra pixels, and the window that
 -- much wider on each side.
@@ -164,7 +186,7 @@ end
 
 -- Shows the atlas by its file and coordinates, cropped to width x height (as fractions) from the middle or one side
 -- horizontally and from the top. Always by file, cropped or not: after SetAtlas a crop lands on the wrong part, and
--- SetAtlas drew the top dividers wrong in game.
+-- SetAtlas draws the top dividers wrong.
 local function SetCroppedAtlas(texture, atlas, widthFraction, heightFraction, align)
 	local info = C_Texture.GetAtlasInfo(atlas)
 	if not info then return end
@@ -187,7 +209,7 @@ end
 -- and loses what the gap slider takes out of the gaps beside it, so a tree keeps the art that was behind it. Cropped
 -- from the bottom when the talent spacing slider makes the area shorter, and from the top by the removed points row
 -- (so the art behind the trees moves up with them); never squashed. dividerX: Blizzard's divider centres, from the
--- border's left edge (the art starts 2 px in).
+-- border's left edge (the art starts BORDER_X in).
 function Frame:LayoutClassArt(layout, frameWidth, dividerX, rowRemoved, bottomTrim)
 	local pieces = self.tmtArtPieces
 	if not pieces then
@@ -206,7 +228,7 @@ function Frame:LayoutClassArt(layout, frameWidth, dividerX, rowRemoved, bottomTr
 	end
 
 	-- Blizzard fills the area with the whole art (Forever's are 2046 x 1177, so it's squashed a little into 1212 x 595);
-	-- the game looks like that, so it stays (checked against an in-game screenshot, 14 Nov).
+	-- the game looks like that, so it stays.
 	local fullHeight = BACKGROUND_HEIGHT - TOP_STRIP - BOTTOM_STRIP
 	local fromTop = rowRemoved / fullHeight
 	local heightFraction = math.min(1, (fullHeight - layout.shrinkY - rowRemoved - (bottomTrim or 0)) / fullHeight)
@@ -214,7 +236,8 @@ function Frame:LayoutClassArt(layout, frameWidth, dividerX, rowRemoved, bottomTr
 	local artHeight = info.bottomTexCoord - info.topTexCoord
 	local top = info.topTexCoord + artHeight * fromTop
 	local bottom = top + artHeight * heightFraction
-	local edges = { 0, dividerX[1] - 2 + (layout.dividerShift[1] or 0), dividerX[2] - 2 + (layout.dividerShift[2] or 0), frameWidth }
+	local edges = { 0, dividerX[1] - BORDER_X + (layout.dividerShift[1] or 0), dividerX[2] - BORDER_X + (layout.dividerShift[2] or 0),
+		frameWidth }
 	local trimmed = heightFraction < 1 or frameWidth ~= FRAME_WIDTH
 	for index, piece in ipairs(pieces) do
 		local tree = layout.trees[index]
@@ -246,8 +269,8 @@ end
 
 -- The frame's background (the strip behind the tabs, and the bottom bar) at its own scale, whatever the window's size:
 -- the top piece shows the art from its top down, the bottom piece its bottom bar, and what's cut is the middle (the
--- class art covers it). A narrower window cuts it at the right. Squashing it to fit moved the tab strip's dark edge up
--- into a black line under the tabs (14 Nov). Background itself stays as the anchor for the rest. topTrim: rows taken
+-- class art covers it). A narrower window cuts it at the right. Squashing it to fit would move the tab strip's dark edge
+-- up into a black line under the tabs. Background itself stays as the anchor for the rest. topTrim: rows taken
 -- off the tab strip (the art starts that far down, so the strip's edge stays on the border).
 function Frame:LayoutBackground(frameWidth, height, topTrim)
 	local info = C_Texture.GetAtlasInfo("Talents-Background-c60")
@@ -280,8 +303,8 @@ local function SetTabWidths(tabSystem, minWidth, maxWidth)
 	if tabSystem.minTabWidth == minWidth then return end
 	tabSystem.minTabWidth, tabSystem.maxTabWidth = minWidth, maxWidth
 	for _, tab in ipairs(tabSystem.tabs) do
-		-- UpdateTabWidth measures the text's set width, which its last run set to the old tab width, so a tab could
-		-- never get narrower again without this.
+		-- UpdateTabWidth measures the text's set width, which its last run set to the old tab width, so without this
+		-- a tab can never get narrower.
 		tab.Text:SetWidth(0)
 		tab:UpdateTabWidth()
 	end
@@ -308,11 +331,11 @@ function Frame:ApplyLayout()
 	-- The tab row: tabs on the left; the unspent points at the right end with the option; the search box before them.
 	local tabSystem = self.TabSystem
 	tabSystem:ClearAllPoints()
-	tabSystem:SetPoint("BOTTOMLEFT", border, "TOPLEFT", TOP_STRIP, -4)
+	tabSystem:SetPoint("BOTTOMLEFT", border, "TOPLEFT", TOP_STRIP, TABS_Y)
 	-- With the points in the tab row they sit POINTS_Y above the border (the box's bottom edge on the border's line),
 	-- and the strip loses its top until the box's top edge touches the title bar: it shows TAB_STRIP_SHOWN, the box is
 	-- POINTS_BOX_HEIGHT tall, so it loses the difference (never so much that the tabs reach the title bar).
-	local tabsTop = -4 + tabSystem:GetHeight()
+	local tabsTop = TABS_Y + tabSystem:GetHeight()
 	local topTrim = pointsInTabRow and Clamp(TAB_STRIP_SHOWN - POINTS_BOX_HEIGHT, 0, TAB_STRIP_SHOWN - tabsTop) or 0
 
 	local points = self.ClassCurrencyDisplay
@@ -320,7 +343,7 @@ function Frame:ApplyLayout()
 	if pointsInTabRow then
 		points:SetPoint("RIGHT", border, "TOPRIGHT", -POINTS_RIGHT, POINTS_Y)
 	else
-		points:SetPoint("TOPRIGHT", border, "TOPRIGHT", -20, -6)
+		points:SetPoint("TOPRIGHT", border, "TOPRIGHT", POINTS_X, POINTS_TOP)
 	end
 	-- What's visible of the points in the tab row: the box (the art's right POINTS_BOX_WIDTH), and the "Unspent
 	-- Talents" text LABEL_SPACING left of it while it's shown.
@@ -341,9 +364,9 @@ function Frame:ApplyLayout()
 	local spec = self.ActiveSpec
 	spec:ClearAllPoints()
 	if pointsInTabRow then
-		spec:SetPoint("LEFT", tabSystem, "RIGHT", 24, 0)
+		spec:SetPoint("LEFT", tabSystem, "RIGHT", ROW_GAP, 0)
 	else
-		spec:SetPoint("TOP", border, "TOP", 0, -20)
+		spec:SetPoint("TOP", border, "TOP", 0, SPEC_Y)
 	end
 
 	-- The talents decide the window's width; the tab row gives way. The row, left to right: the tabs (from TOP_STRIP);
@@ -358,7 +381,7 @@ function Frame:ApplyLayout()
 	local specWidth = (pointsInTabRow and spec:IsShown()) and spec:GetWidth() or 0
 	local middleMin = math.max(nameShown and NAME_BOX_MIN or 0, specWidth)
 	self.tmtSearchWidth = self.tmtSearchWidth or search:GetWidth()
-	local arrow = 3 + dropdown:GetWidth()
+	local arrow = ARROW_GAP + dropdown:GetWidth()
 	local tabMin, middle, searchBox = TAB_WIDTH_MIN, math.max(nameShown and NAME_BOX_MAX or 0, specWidth), self.tmtSearchWidth
 	local withLabel = pointsInTabRow
 	local function RowWidth()
@@ -409,8 +432,8 @@ function Frame:ApplyLayout()
 	local rightOfArrow = pointsInTabRow and (POINTS_RIGHT + PointsExtent(withLabel) + POINTS_GAP) or SEARCH_RIGHT
 	search:ClearAllPoints()
 	dropdown:ClearAllPoints()
-	search:SetPoint("BOTTOMRIGHT", border, "TOPRIGHT", -(rightOfArrow + arrow), 4)
-	dropdown:SetPoint("LEFT", search, "RIGHT", 3, -2)
+	search:SetPoint("BOTTOMRIGHT", border, "TOPRIGHT", -(rightOfArrow + arrow), SEARCH_Y)
+	dropdown:SetPoint("LEFT", search, "RIGHT", ARROW_GAP, ARROW_Y)
 	self.NameBox:SetWidth(Clamp(middle, NAME_BOX_MIN, NAME_BOX_MAX))
 	local frameWidth = math.max(treesWidth, rowWidth)
 	if frameWidth > treesWidth then
@@ -419,7 +442,6 @@ function Frame:ApplyLayout()
 	end
 	local shrinkX = FRAME_WIDTH - frameWidth
 
-	-- Without the bottom bar, the empty art under the last row goes too (BOTTOM_TRIM).
 	local bottomStrip = barRemoved and BOTTOM_STRIP_REMOVED or BOTTOM_STRIP
 	local bottomTrim = barRemoved and BOTTOM_TRIM or 0
 	local shrinkY = layout.shrinkY + rowRemoved + (BOTTOM_STRIP - bottomStrip) + bottomTrim + topTrim
@@ -453,14 +475,13 @@ function Frame:ApplyLayout()
 	self:UpdatePadding()
 
 	-- The ornaments along the top keep their size, cropped at the outer ends if the window is narrower.
-	local borderWidth = frameWidth + 4
-	local center = (FRAME_WIDTH + 4) / 2
+	local borderWidth = frameWidth + 2 * BORDER_X
+	local center = (FRAME_WIDTH + 2 * BORDER_X) / 2
 	local dividerX = { center - leftWidth / 2 + DIVIDER_OFFSET_X, center + rightWidth / 2 - DIVIDER_OFFSET_X }
 
 	self:LayoutClassArt(layout, frameWidth, dividerX, rowRemoved, bottomTrim)
-	-- Always by the file and its coordinates, at full size too: in game the SetAtlas path drew a dark block and no
-	-- bar at 100% space between trees, while the cropped one (below about 97%) was right (14 Nov).
-	local half = borderWidth / 2 - 8
+	-- Always by the file and its coordinates, at full size too: through SetAtlas they draw as a dark block with no bar.
+	local half = borderWidth / 2 - ORNAMENT_INSET
 	for _, d in ipairs({ { self.DividerHorizontalLeft, "Talents-divider-left-c60", leftWidth, "RIGHT" },
 		{ self.DividerHorizontalRight, "Talents-divider-right-c60", rightWidth, "LEFT" } }) do
 		local texture, atlas, width, align = d[1], d[2], d[3], d[4]
@@ -470,12 +491,12 @@ function Frame:ApplyLayout()
 	end
 
 	-- The dividers between trees, where Blizzard's anchors put them, moved with the gap they're in.
-	-- They keep their size, cut at the bottom where the art ends when the window is shorter (they reached past the
-	-- window's bottom at the smallest talent spacing).
-	local dividerY = -4 - leftHeight / 2 + DIVIDER_OFFSET_Y + rowRemoved
+	-- They keep their size, cut at the bottom where the art ends when the window is shorter (uncut, they reach past
+	-- the window's bottom at the smallest talent spacing).
+	local dividerY = ORNAMENT_Y - leftHeight / 2 + DIVIDER_OFFSET_Y + rowRemoved
 	local verticalWidth, verticalHeight = AtlasSize("Talents-divider-vertical-c60")
 	local artHeight = BACKGROUND_HEIGHT - shrinkY - (TOP_STRIP - topTrim) - bottomStrip
-	local room = artHeight + 4 + dividerY -- from the divider's top to the art's bottom (the border is 4 above the art)
+	local room = artHeight + BORDER_Y + dividerY -- from the divider's top to the art's bottom
 	local height = Clamp(room, 1, verticalHeight)
 	for index, divider in ipairs({ self.DividerVerticalLeft, self.DividerVerticalRight }) do
 		divider:ClearAllPoints()
@@ -489,26 +510,35 @@ function Frame:ApplyLayout()
 	nameBox:ClearAllPoints()
 	nameBox:SetPoint("LEFT", tabSystem, "RIGHT", ROW_GAP, 0)
 
-	-- Apply (with Undo to its right) where Blizzard has it, or in the tree area's bottom-left corner without the bar,
-	-- as narrow as its text allows. Above the talent buttons, which would take its clicks where they overlap.
-	-- In the corner its text is the game's "Apply Changes", or just "Apply" once the two sliders together take
-	-- APPLY_SHORT_AT points or more off Blizzard's spacing (the user's rule: 85% and 95% does it).
-	local apply = self.ApplyButton
+	-- Apply (with Undo to its right) where Blizzard has it, or in the tree area's bottom-right corner without the bar
+	-- (more room around the last row there than on the left), as narrow as its text allows, with Undo to its left so
+	-- Apply doesn't move when Undo appears. Above the talent buttons, which would take its clicks where they overlap.
+	-- In the corner its text is the game's "Apply Changes", or just "Apply" once the sliders squeeze the corner enough.
+	-- Either slider alone barely does; the two together do. So the points both take off Blizzard's spacing count as
+	-- (X + Y) / max(X, Y) * (X + Y): one slider alone counts as itself, two equal ones as four times one of them. Y
+	-- (talent spacing) counts double, so both run 0 to 80 points (spacing only goes down to 60%). "Apply" from
+	-- APPLY_SHORT_AT.
+	local apply, undo = self.ApplyButton, self.UndoButton
 	apply:ClearAllPoints()
+	undo:ClearAllPoints()
 	apply:SetText(TALENT_FRAME_APPLY_BUTTON_TEXT)
 	if barRemoved then
-		apply:SetPoint("BOTTOMLEFT", self.ClassBackground, "BOTTOMLEFT", APPLY_CORNER_X, 12)
-		if (100 - ns.saved.treeGap) + (100 - ns.saved.talentSpacing) >= APPLY_SHORT_AT then
+		apply:SetPoint("BOTTOMRIGHT", self.ClassBackground, "BOTTOMRIGHT", -APPLY_CORNER_X, APPLY_CORNER_Y)
+		undo:SetPoint("RIGHT", apply, "LEFT", -UNDO_GAP_CORNER, 0)
+		local x, y = 100 - ns.saved.treeGap, 2 * (100 - ns.saved.talentSpacing)
+		local most = math.max(x, y)
+		if most > 0 and (x + y) / most * (x + y) >= APPLY_SHORT_AT then
 			apply:SetText(APPLY)
 		end
 		apply:SetWidth(apply:GetFontString():GetUnboundedStringWidth() + APPLY_TEXT_PADDING)
 	else
-		apply:SetPoint("BOTTOM", self.Background, "BOTTOM", 0, 8)
+		apply:SetPoint("BOTTOM", self.Background, "BOTTOM", 0, APPLY_BAR_Y)
+		undo:SetPoint("LEFT", apply, "RIGHT", UNDO_GAP, 0)
 		apply:SetWidth(APPLY_WIDTH)
 	end
-	local buttonLevel = self.ButtonsParent:GetFrameLevel() + CORNER_BUTTON_LEVEL
+	local buttonLevel = self.ButtonsParent:GetFrameLevel() + ns.ABOVE_TALENTS_LEVEL
 	apply:SetFrameLevel(buttonLevel)
-	self.UndoButton:SetFrameLevel(buttonLevel)
+	undo:SetFrameLevel(buttonLevel)
 
 	self:UpdateAllTalentButtonPositions()
 	self:UpdateAllGatePositions()

@@ -1,13 +1,16 @@
 local _, ns = ...
 
--- A small two-level menu of our own, for the Templates tab (design document 5.3). Blizzard's menu system opens a
--- submenu only once the mouse has rested on its entry for a third of a second (Blizzard_Menu/Menu.lua,
+-- A small two-level menu of our own, for the Templates and Actions tabs. Blizzard's menu system
+-- opens a submenu only once the mouse has rested on its entry for a third of a second (Blizzard_Menu/Menu.lua,
 -- RestartMouseEventTimer, in secure code addons can't change); here the class submenus open the moment they're
--- hovered. Drawn with the same art as Forever's menus (Blizzard_Menu/Mainline/MenuTemplates.lua MenuStyle1Mixin,
--- Mainline/MenuVariants.lua CreateRadio, MenuVariants.lua dividers, arrows and highlights).
+-- hovered. Blizzard's menus opened from addon code also fail in combat ("Interface action failed because of an
+-- AddOn"), so Actions uses this too. Drawn with the same art as Forever's menus
+-- (Blizzard_Menu/Mainline/MenuTemplates.lua MenuStyle1Mixin, Mainline/MenuVariants.lua CreateRadio, MenuVariants.lua
+-- dividers, arrows and highlights).
 --
--- Entries: { text = , onClick = function, radio = true, checked = bool } | { text = , submenu = function -> entries }
--- | { divider = true }.
+-- Entries: { text = , onClick = function, radio = true, checked = bool, disabled = bool, tooltip = function(tooltip) }
+-- | { text = , submenu = function -> entries } | { divider = true }. A disabled entry is greyed, can't be clicked and
+-- isn't highlighted, but still shows its tooltip (why it's greyed), as Blizzard's do.
 
 local Flyout = {}
 ns.Flyout = Flyout
@@ -33,6 +36,8 @@ local function CloseLevel(index)
 	for level = #levels, index, -1 do
 		local menu = levels[level]
 		if menu:IsShown() then
+			local tipOwner = GameTooltip:GetOwner()
+			if tipOwner and tipOwner:GetParent() == menu then GameTooltip:Hide() end
 			if menu.parentRow then
 				menu.parentRow.highlight:Hide()
 				menu.parentRow = nil
@@ -57,6 +62,12 @@ end
 local OpenLevel
 
 local function RowEnter(row)
+	if row.entry.tooltip then
+		GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+		row.entry.tooltip(GameTooltip)
+		GameTooltip:Show()
+	end
+	if row.entry.disabled then return end
 	row.highlight:Show()
 	local menu = row:GetParent()
 	local deeper = levels[menu.level + 1]
@@ -71,6 +82,7 @@ end
 
 -- A row whose submenu is open stays highlighted.
 local function RowLeave(row)
+	if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
 	local deeper = levels[row:GetParent().level + 1]
 	if not (deeper and deeper:IsShown() and deeper.parentRow == row) then
 		row.highlight:Hide()
@@ -79,7 +91,7 @@ end
 
 local function RowClick(row)
 	local entry = row.entry
-	if entry.submenu then return end
+	if entry.submenu or entry.disabled then return end
 	Flyout.Close()
 	if entry.onClick then entry.onClick() end
 end
@@ -161,6 +173,7 @@ local function Fill(menu, entries)
 		local rowWidth = 0
 		if not divider then
 			row.text:SetText(entry.text)
+			row.text:SetTextColor((entry.disabled and DISABLED_FONT_COLOR or HIGHLIGHT_FONT_COLOR):GetRGB())
 			if entry.radio then
 				row.text:SetPoint("LEFT", row.radio, "RIGHT", 1, 0)
 				rowWidth = row.radio:GetWidth() - 3 + 1

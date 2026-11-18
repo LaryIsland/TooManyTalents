@@ -1,7 +1,7 @@
 local _, ns = ...
 local L = ns.L
 
--- Sharing templates as text (design document 5.13): Actions > Export gives a line to copy, Actions > Import takes one.
+-- Sharing templates as text: Actions > Export gives a line to copy, Actions > Import takes one.
 -- The line is a version prefix, then base64 of the raw-deflated payload, one field per line:
 --   class, name, ranks ("nodeID:rank,..."), choices ("nodeID:entryID,...")
 -- Plain text rather than the client's CBOR serialiser, which isn't confirmed in game; deflate and base64 are.
@@ -67,7 +67,7 @@ end
 
 -- Whether the ranks fit the class's tree as it is now: every rank within its talent's maximum, choices among the
 -- talent's options, no more points than the level cap gives, tiers and prerequisites met. Talents no longer in the
--- game are let through: opening the template drops them and says so (design document 4).
+-- game are let through: opening the template drops them and says so.
 local function Fits(model, ranks, choices)
 	for nodeID, rank in pairs(ranks) do
 		local node = model.nodes[nodeID]
@@ -83,7 +83,8 @@ local function Fits(model, ranks, choices)
 			if not known then return false end
 		end
 	end
-	return ns.Templates.Points(model, ranks) <= model.cap and ns.Templates.IsValid(model, ranks)
+	local tally = ns.Templates.Tally(model, ranks)
+	return tally.total <= model.cap and ns.Templates.IsValid(model, ranks, tally)
 end
 
 -- Makes a new template from a pasted line, under its own name (numbered if taken). Returns it, or nil and why not.

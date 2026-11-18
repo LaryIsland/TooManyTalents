@@ -1,12 +1,12 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/
 ..\..\..\..\..\WoW\Data\Interface\AddOns\Blizzard_SharedXML\UI.xsd">
 
-	<!-- Our own copy of Forever's talent panel (design document 2). The art is copied from
+	<!-- Our own copy of Forever's talent panel. The art is copied from
 	Blizzard_PlayerSpells/Camelot/ClassTalents/Blizzard_ClassTalentsFrame.xml (ClassTalentsFrameTemplate); the
 	behaviour is TalentFrameBaseMixin's plus ours (Frame.lua). Left out: the loadout system, the general reset
 	dropdown, the inspect copy button, hero talents and the gamepad hints. -->
 
-	<!-- The button beside a tree's name on a template, clearing that tree (design document 5.7). -->
+	<!-- The button beside a tree's name on a template, clearing that tree. -->
 	<Button name="TooManyTalentsTreeResetButtonTemplate" virtual="true" frameLevel="1015">
 		<Size x="22" y="22"/>
 		<NormalTexture atlas="talents-button-reset"/>
@@ -207,7 +207,7 @@
 				<!-- Anchored in code (Layout.lua). -->
 			</Frame>
 
-			<!-- The open template's name (design document 5.4). -->
+			<!-- The open template's name. -->
 			<EditBox parentKey="NameBox" inherits="InputBoxTemplate" letters="30" autoFocus="false" frameLevel="1010" hidden="true">
 				<Size x="200" y="20"/>
 				<!-- Anchored in code (Layout.lua). -->
@@ -252,8 +252,8 @@
 				<!-- Anchored in code (Layout.lua). -->
 			</DropdownButton>
 
-			<!-- Design document 5.5. Anchored and sized in code (Layout.lua): it moves into the tree area's bottom-left
-			corner when the bottom bar is removed. -->
+			<!-- Anchored and sized in code (Layout.lua): it moves into the tree area's bottom-right corner when the bottom
+			bar is removed. -->
 			<Button parentKey="ApplyButton" inherits="UIPanelButtonNoTooltipTemplate, UIButtonTemplate" text="TALENT_FRAME_APPLY_BUTTON_TEXT">
 				<KeyValues>
 					<KeyValue key="smartNavigationIgnored" value="true" type="boolean"/>
@@ -300,9 +300,7 @@
 					<KeyValue key="smartNavigationIgnored" value="true" type="boolean"/>
 				</KeyValues>
 				<Size x="25" y="25"/>
-				<Anchors>
-					<Anchor point="LEFT" relativeKey="$parent.ApplyButton" relativePoint="RIGHT" x="14" y="0"/>
-				</Anchors>
+				<!-- Anchored in code (Layout.lua): right of Apply with the bottom bar, left of it in the corner. -->
 			</Button>
 
 			<ModelScene parentKey="FxModelScene" frameStrata="HIGH" inherits="ScriptAnimatedModelSceneTemplate" frameLevel="4000">

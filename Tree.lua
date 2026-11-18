@@ -5,7 +5,7 @@ local _, ns = ...
 -- and applied against it, and the window lays talents out with it.
 --
 -- Every class, the player's included, is read from an empty view config: on the player's own config a tier
--- condition reports only the points still missing, not the full requirement (design document 3).
+-- condition reports only the points still missing, not the full requirement.
 
 local Tree = {}
 ns.Tree = Tree
@@ -16,6 +16,8 @@ local EDGE_SUFFICIENT = Enum.TraitEdgeType.SufficientForAvailability
 -- Talents are 600 units apart. A node further than this from every other on either axis is misplaced in the game's
 -- data (Hunter's Improved Serpent Sting) and is left out, as Talented does (Talented/forever.lua:78-92).
 local OUTLIER_DISTANCE = 1500
+-- The level of the first talent point, used only if the game doesn't say how many points the level cap gives.
+local FIRST_TALENT_LEVEL = 10
 
 local models = {}
 
@@ -45,10 +47,28 @@ local function AddSpendConditions(configID, conditionIDs, result, gates)
 	return result
 end
 
+-- What the view config (-3) holds as far as we know: "empty:<class>" after InitializeView, a template's
+-- table after Templates.LoadIntoView, nil when unknown. The game's talent links load into it too (Blizzard's
+-- ClassTalentImportExport.lua ViewLoadout), so Core.lua's post-hooks on the two C_ClassTalents calls clear it when
+-- anything but us calls them (`loadingView` marks our own calls), and the window loads what it shows again before
+-- reading the view config (Frame:EnsureView).
+Tree.viewHolds = nil
+Tree.loadingView = false
+
+function Tree.OnViewLoadedElsewhere()
+	if not Tree.loadingView then Tree.viewHolds = nil end
+end
+
 -- Loads an empty view of the class's tree into the view config. Returns the tree ID, or nil if the game refused.
 function Tree.InitializeView(class)
 	local specID = ns.SpecForClass(class)
-	if not specID or not pcall(C_ClassTalents.InitializeViewLoadout, specID, ns.MaxLevel()) then return end
+	Tree.viewHolds = nil
+	if not specID then return end
+	Tree.loadingView = true
+	local ok = pcall(C_ClassTalents.InitializeViewLoadout, specID, ns.MaxLevel())
+	Tree.loadingView = false
+	if not ok then return end
+	Tree.viewHolds = "empty:" .. class
 	return C_ClassTalents.GetTraitTreeForSpec(specID), specID
 end
 
@@ -198,23 +218,41 @@ local function Build(class)
 		model.top = math.min(model.top or tree.top or math.huge, tree.top or math.huge)
 		model.bottom = math.max(model.bottom or tree.bottom or -math.huge, tree.bottom or -math.huge)
 	end
+	-- Every tree is as wide as the class's widest: a tree with an empty last column keeps it, as in Blizzard's window
+	-- (the warlock's Destruction has talents in only three of its four columns), rather than the gap slider taking it.
+	local widest = 0
+	for _, tree in ipairs(model.trees) do
+		if tree.left then widest = math.max(widest, tree.right - tree.left) end
+	end
+	for _, tree in ipairs(model.trees) do
+		if tree.left then tree.right = tree.left + widest end
+	end
 
 	-- Points available at the level cap: what the empty view has to spend.
 	local currencies = C_Traits.GetTreeCurrencyInfo(configID, treeID, false)
 	local currency = currencies and currencies[1]
 	model.cap = currency and (currency.quantity + (currency.spent or 0)) or 0
+	-- If it reports none: a point a level from the first talent level (10 on Forever) to the cap.
 	if model.cap <= 0 then
-		model.cap = ns.MaxLevel() - 9
+		model.cap = ns.MaxLevel() - FIRST_TALENT_LEVEL + 1
 	end
 	return model
 end
+
+-- A class whose tree couldn't be read is left a moment before it's read again, rather than rebuilt (and the
+-- view config reset) on every call while the game hasn't got it.
+local RETRY_SECONDS = 2
+local failedAt = {}
 
 -- The class's model, or nil if the game hasn't got its tree yet (try again later).
 function Tree.Get(class)
 	local model = models[class]
 	if model == nil then
+		local failed = failedAt[class]
+		if failed and GetTime() - failed < RETRY_SECONDS then return nil end
 		model = Build(class)
-		models[class] = model or nil
+		models[class] = model
+		failedAt[class] = not model and GetTime() or nil
 	end
 	return model
 end

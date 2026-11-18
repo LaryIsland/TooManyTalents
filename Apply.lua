@@ -1,7 +1,7 @@
 local _, ns = ...
 local L = ns.L
 
--- Applying a template to the player's talents (design document 5.8). Only ever adds: buys ranks on the active config
+-- Applying a template to the player's talents. Only ever adds: buys ranks on the active config
 -- in tier order, repeating passes until nothing more can be bought, then commits. If anything can't be bought it rolls
 -- back, so nothing changes (Talented/forever.lua:546-617, 676-730).
 
@@ -13,6 +13,7 @@ local COMMIT_TIMEOUT = 30
 
 local committing, commitTimer
 
+-- Whether a commit is under way. Not called by the addon itself; kept for testing.
 function Apply.IsBusy()
 	return committing ~= nil
 end
@@ -105,8 +106,10 @@ local function Run(plan)
 		return
 	end
 
-	committing = configID
+	-- The panel's visuals first: if they error, nothing is left marked as committing (Apply would stay greyed as busy
+	-- all session) and the staged ranks stay for Undo.
 	if ns.frame then ns.frame:OnApplyStarted() end
+	committing = configID
 	if not C_ClassTalents.CommitConfig(nil) then
 		C_Traits.RollbackConfig(configID)
 		Finish(L.APPLY_REJECTED)

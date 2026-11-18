@@ -1,6 +1,6 @@
 local _, ns = ...
 
--- The Talented look, three options, all off by default (design document 5.10):
+-- The Talented look, three options, all off by default:
 --  * icons: square action-button style, green when a point can go in, yellow when maxed, grey and desaturated when
 --    not available (and darkened as Blizzard's are, most on rows not reached yet), with Blizzard's rank number
 --    (Talented/ui/buttons.lua, view.lua:180-250).
@@ -8,8 +8,8 @@ local _, ns = ...
 --    number.
 --  * arrows: straight branches that turn at right angles, with Talented's arrowheads (Talented/ui/lines.lua).
 -- Blizzard's buttons stay where they are, invisible (alpha 0), so clicks and tooltips are still theirs; the icons are
--- drawn over them. Blizzard's arrows are hidden the same way. Talented's textures are MIT licensed
--- (Media/Talented-LICENSE.txt).
+-- drawn over them. Blizzard's arrows are hidden the same way. The textures in Media/ are Blizzard's Classic talent
+-- art, as Talented ships them.
 
 local TalentedStyle = {}
 ns.TalentedStyle = TalentedStyle
@@ -38,8 +38,8 @@ local GREY = CreateColor(0.65, 0.65, 0.65)
 --  * every unavailable talent: the icon desaturated, then a black overlay, 0.7 on rows whose tier isn't reached yet
 --    (gated) and 0.25 on talents locked by a prerequisite or disabled;
 --  * gated only: Blizzard's border is then talents-node-square-locked, whose middle isn't empty but a lightly textured
---    warm dark grey (about 52/46/42) at half opacity, drawn over the icon. That's what lifts the shadows (15 Nov,
---    read from the game's art). We draw the same art's middle (FILL_INSET: its 4-unit frame of 40 cut off) over ours.
+--    warm dark grey (about 52/46/42) at half opacity, drawn over the icon. That's what lifts the shadows. We draw
+--    the same art's middle (FILL_INSET: its 4-unit frame of 40 cut off) over ours.
 --  * borders: Blizzard's locked frame is 0.64 as bright as its grey one (mean luminance 41.2 against 64.3), so on gated
 --    talents both our borders (the state-coloured slot and the button frame) are multiplied by 0.64. Locked and
 --    disabled use Blizzard's plain grey border, so ours stay as they are.
@@ -102,14 +102,14 @@ local function CreateIcon(button, parent)
 	icon.dim:Hide()
 
 	-- The middle of Blizzard's locked border, cropped from the atlas by whole-file coordinates (SetAtlas then
-	-- SetTexCoord crops the wrong part, shared CLAUDE.md).
+	-- SetTexCoord crops the wrong part).
 	icon.fill = icon:CreateTexture(nil, "BORDER", nil, 2)
 	icon.fill:SetAllPoints()
 	icon.fill:Hide()
 	local info = C_Texture.GetAtlasInfo(LOCKED_ART)
 	if info then
 		local width, height = info.rightTexCoord - info.leftTexCoord, info.bottomTexCoord - info.topTexCoord
-		icon.fill:SetTexture(info.file or info.filename)
+		icon.fill:SetTexture(info.file)
 		icon.fill:SetTexCoord(info.leftTexCoord + width * FILL_INSET, info.rightTexCoord - width * FILL_INSET,
 			info.topTexCoord + height * FILL_INSET, info.bottomTexCoord - height * FILL_INSET)
 		icon.hasFill = true

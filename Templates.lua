@@ -1,7 +1,7 @@
 local _, ns = ...
 local L = ns.L
 
--- Templates: named builds for one class, stored as { [nodeID] = rank } (design document 4). Ranks for talents no
+-- Templates: named builds for one class, stored as { [nodeID] = rank }. Ranks for talents no
 -- longer in the game are dropped when the template is opened, giving those points back.
 
 local Templates = {}
@@ -27,7 +27,6 @@ function Templates.Get(class, name)
 	return ClassTable(class)[name]
 end
 
--- base, or base followed by the first free number.
 -- The name box takes 30 letters (UI/Frame.xml), so names are kept to that wherever they're made: a longer one would be
 -- cut by the box and renamed to the cut version on leaving it.
 local NAME_LETTERS = 30
@@ -115,7 +114,7 @@ end
 -- Points --------------------------------------------------------------------------------------------------------------
 
 -- Whether you have something on a node the template doesn't: more ranks than it, or another option of a choice
--- talent. Applying can't take it away (5.8), and the target marks it red (5.12).
+-- talent. Applying can't take it away, and the target marks it red.
 function Templates.HasMoreThan(template, nodeID, info)
 	local have = info and info.ranksPurchased or 0
 	local choice = template.choices[nodeID]
@@ -123,23 +122,35 @@ function Templates.HasMoreThan(template, nodeID, info)
 		or (choice ~= nil and have > 0 and info.activeEntry ~= nil and info.activeEntry.entryID ~= choice)
 end
 
--- Total points, and points per tree. Talents no longer in the game aren't counted: they're in no tree.
-function Templates.Points(model, ranks)
-	local total, perTree = 0, {}
+-- The points in a set of ranks, added up once: in all, per tree, and per tree and tier, so the rules below
+-- don't add them up again for every talent they look at. Good for those ranks only: the window keeps one per redraw
+-- (Frame:GetTally), and the rules make their own when not given one. Talents no longer in the game aren't counted:
+-- they're in no tree.
+function Templates.Tally(model, ranks)
+	local tally = { ranks = ranks, total = 0, perTree = {}, perTier = {} }
 	for index in ipairs(model.trees) do
-		perTree[index] = 0
+		tally.perTree[index] = 0
+		tally.perTier[index] = {}
 	end
 	for nodeID, rank in pairs(ranks) do
 		local node = model.nodes[nodeID]
 		if node then
-			total = total + rank
-			perTree[node.tree] = perTree[node.tree] + rank
+			tally.total = tally.total + rank
+			tally.perTree[node.tree] = tally.perTree[node.tree] + rank
+			local tiers = tally.perTier[node.tree]
+			tiers[node.tier] = (tiers[node.tier] or 0) + rank
 		end
 	end
-	return total, perTree
+	return tally
 end
 
--- Ranks for talents no longer in the game's tree are dropped (design document 4). Talents still in the game that the
+-- Total points, and points per tree.
+function Templates.Points(model, ranks)
+	local tally = Templates.Tally(model, ranks)
+	return tally.total, tally.perTree
+end
+
+-- Ranks for talents no longer in the game's tree are dropped. Talents still in the game that the
 -- window leaves out (the misplaced-node rule, or filtered when the model was read) keep theirs: they're not counted
 -- or applied, but they're not lost either. Returns how many talents with points were dropped.
 local function Gone(model, nodeID)
@@ -164,12 +175,11 @@ end
 
 -- Points in the node's tree spent in lower tiers. A talent needs its tier's worth there: counting only lower tiers
 -- (not the whole tree) is what guarantees a template can be learned in tier order (Talented/editmode.lua:72-100).
-local function PointsBelowTier(model, ranks, node)
+local function PointsBelowTier(tally, node)
 	local total = 0
-	for _, nodeID in ipairs(model.trees[node.tree].nodes) do
-		local other = model.nodes[nodeID]
-		if other.tier < node.tier then
-			total = total + (ranks[nodeID] or 0)
+	for tier, points in pairs(tally.perTier[node.tree]) do
+		if tier < node.tier then
+			total = total + points
 		end
 	end
 	return total
@@ -194,36 +204,56 @@ local function MeetsPrerequisites(model, ranks, node)
 	return true
 end
 
-local function MeetsTier(model, ranks, node)
-	return node.tier <= 0 or PointsBelowTier(model, ranks, node) >= node.tier
+local function MeetsTier(tally, node)
+	return node.tier <= 0 or PointsBelowTier(tally, node) >= node.tier
 end
 
--- Whether every ranked talent in the template still has its tier and prerequisites.
-function Templates.IsValid(model, ranks)
+-- Whether every ranked talent in the template still has its tier and prerequisites. tally (optional): ranks' Tally.
+function Templates.IsValid(model, ranks, tally)
+	tally = tally or Templates.Tally(model, ranks)
 	for nodeID, rank in pairs(ranks) do
 		local node = model.nodes[nodeID]
-		if node and rank > 0 and not (MeetsTier(model, ranks, node) and MeetsPrerequisites(model, ranks, node)) then
+		if node and rank > 0 and not (MeetsTier(tally, node) and MeetsPrerequisites(model, ranks, node)) then
 			return false
 		end
 	end
 	return true
 end
 
-function Templates.CanAddRank(model, template, nodeID)
+-- tally (optional, here and below): the template's ranks' Tally.
+function Templates.CanAddRank(model, template, nodeID, tally)
 	local node = model.nodes[nodeID]
 	local ranks = template.ranks
 	if not node or (ranks[nodeID] or 0) >= node.maxRanks then return false end
-	if Templates.Points(model, ranks) >= model.cap then return false end
-	return MeetsTier(model, ranks, node) and MeetsPrerequisites(model, ranks, node)
+	tally = tally or Templates.Tally(model, ranks)
+	if tally.total >= model.cap then return false end
+	return MeetsTier(tally, node) and MeetsPrerequisites(model, ranks, node)
 end
 
--- A rank can come off if every talent still ranked afterwards keeps its tier and prerequisites.
-function Templates.CanRemoveRank(model, template, nodeID)
+-- Moves one point on a node in and out of a tally, as if its rank were one different.
+local function AdjustTally(tally, node, by)
+	tally.total = tally.total + by
+	tally.perTree[node.tree] = tally.perTree[node.tree] + by
+	local tiers = tally.perTier[node.tree]
+	tiers[node.tier] = (tiers[node.tier] or 0) + by
+end
+
+-- A rank can come off if every talent still ranked afterwards keeps its tier and prerequisites. The rank and the tally
+-- are lowered for the check and put back after. A template that already breaks the rules can always lose ranks, so it
+-- can be cleaned up rather than locked: a copy of someone's build or a talent link can, as the game counts
+-- a tier's points anywhere in the tree and we only count lower tiers. Whether it does is kept on the tally.
+function Templates.CanRemoveRank(model, template, nodeID, tally)
 	local rank = template.ranks[nodeID] or 0
-	if rank <= 0 or not model.nodes[nodeID] then return false end
+	local node = model.nodes[nodeID]
+	if rank <= 0 or not node then return false end
 	local ranks = template.ranks
+	tally = tally or Templates.Tally(model, ranks)
+	if tally.valid == nil then tally.valid = Templates.IsValid(model, ranks, tally) end
+	if not tally.valid then return true end
 	ranks[nodeID] = rank - 1
-	local valid = Templates.IsValid(model, ranks)
+	AdjustTally(tally, node, -1)
+	local valid = Templates.IsValid(model, ranks, tally)
+	AdjustTally(tally, node, 1)
 	ranks[nodeID] = rank
 	return valid
 end
@@ -275,7 +305,7 @@ function Templates.SetChoice(model, template, nodeID, entryID)
 	return true
 end
 
--- Clears every rank in one of the three trees (the per-tree reset button, design document 5.7). Nothing outside the
+-- Clears every rank in one of the three trees (the per-tree reset button). Nothing outside the
 -- tree depends on it.
 function Templates.ResetTree(model, template, treeIndex)
 	for _, nodeID in ipairs(model.trees[treeIndex].nodes) do
@@ -306,17 +336,27 @@ end
 
 -- Loads the template into the view config. The window patches each node's state from the template too
 -- (Templates.PatchNodeInfo), so what's drawn follows these rules even if the game's view config doesn't.
+-- Returns whether it loaded: the game answers false when it refuses the build (Blizzard_ClassTalentImportExport.lua
+-- ViewLoadout), and the window doesn't show a template it couldn't load.
 function Templates.LoadIntoView(model, template)
-	if not ns.Tree.InitializeView(model.class) then return false end
-	return pcall(C_ClassTalents.ViewLoadout, Entries(model, template))
+	local Tree = ns.Tree
+	if not Tree.InitializeView(model.class) then return false end
+	Tree.loadingView = true
+	local ok, loaded = pcall(C_ClassTalents.ViewLoadout, Entries(model, template))
+	Tree.loadingView = false
+	if not ok or loaded == false then return false end
+	Tree.viewHolds = template
+	return true
 end
 
 -- Rewrites a node's info from the view config to match the template: ranks, what can be bought or refunded,
--- whether its tier and prerequisites are met, and which arrows out of it are lit.
-function Templates.PatchNodeInfo(model, template, info)
+-- whether its tier and prerequisites are met, and which arrows out of it are lit. tally (optional): the template's
+-- ranks' Tally, shared by every node of a redraw.
+function Templates.PatchNodeInfo(model, template, info, tally)
 	local node = model.nodes[info.ID]
 	if not node then return end
 	local ranks = template.ranks
+	tally = tally or Templates.Tally(model, ranks)
 	local rank = ranks[info.ID] or 0
 	info.ranksPurchased = rank
 	info.currentRank = rank
@@ -332,10 +372,10 @@ function Templates.PatchNodeInfo(model, template, info)
 	else
 		info.activeEntry = { entryID = entryID, rank = rank }
 	end
-	info.isAvailable = MeetsTier(model, ranks, node)
+	info.isAvailable = MeetsTier(tally, node)
 	info.meetsEdgeRequirements = MeetsPrerequisites(model, ranks, node)
-	info.canPurchaseRank = Templates.CanAddRank(model, template, info.ID)
-	info.canRefundRank = Templates.CanRemoveRank(model, template, info.ID)
+	info.canPurchaseRank = Templates.CanAddRank(model, template, info.ID, tally)
+	info.canRefundRank = Templates.CanRemoveRank(model, template, info.ID, tally)
 	local full = rank >= node.maxRanks
 	for _, edge in ipairs(info.visibleEdges or {}) do
 		edge.isActive = full
@@ -343,11 +383,11 @@ function Templates.PatchNodeInfo(model, template, info)
 end
 
 -- Rewrites a tier condition (gate) from the view config to match the template.
-function Templates.PatchCondInfo(model, template, condID, info)
+function Templates.PatchCondInfo(model, template, condID, info, tally)
 	local gate = model.gates[condID]
 	if not gate or not gate.tree then return end
-	local _, perTree = Templates.Points(model, template.ranks)
-	local missing = math.max(0, gate.required - (perTree[gate.tree] or 0))
+	tally = tally or Templates.Tally(model, template.ranks)
+	local missing = math.max(0, gate.required - (tally.perTree[gate.tree] or 0))
 	info.isMet = missing == 0
 	info.spentAmountRequired = missing
 end

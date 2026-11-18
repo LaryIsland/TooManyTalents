@@ -9,7 +9,7 @@ for key, text in pairs(ns.L) do
 	end
 end
 
--- Config -3: the sandbox the game uses to show talent links. Templates are shown in it (design document 4).
+-- Config -3: the sandbox the game uses to show talent links. Templates are shown in it.
 ns.VIEW_CONFIG_ID = Constants.TraitConsts.VIEW_TRAIT_CONFIG_ID
 
 -- One spec per class (Blizzard_PlayerSpells/Camelot/ClassTalents/Blizzard_ClassTalentUtil.lua).
@@ -97,8 +97,7 @@ end
 
 -- Saved data --------------------------------------------------------------------------------------------------------
 
--- The options, kept in AceDB profiles (UI/Options.lua). All off, so the window looks like Blizzard's unless chosen
--- (design document 5.10).
+-- The options, kept in AceDB profiles (UI/Options.lua). All off, so the window looks like Blizzard's unless chosen.
 local DEFAULTS = {
 	oldIcons = false,
 	oldPoints = false,
@@ -106,9 +105,10 @@ local DEFAULTS = {
 	hideBottomBar = false,
 	hideSearch = false,
 	pointsInTabRow = false,
+	templateLevel = false,
 }
 
--- Templates, the window's position and the two layout sliders are account-wide (design document 4 and 6).
+-- Templates, the window's position and the two layout sliders are account-wide.
 -- templates[class][name] = { class, name, ranks = { [nodeID] = rank }, choices = { [nodeID] = entryID }, targets }
 -- treeGap and talentSpacing are percentages of Blizzard's spacing, 100 being Blizzard's own.
 ns.On("ADDON_LOADED", function(name)
@@ -144,6 +144,7 @@ local function Build()
 	if type(talents) == "table" and window.tmtLoaded and talents.tmtLoaded then
 		ns.frame = talents
 		tinsert(UISpecialFrames, "TooManyTalentsFrame")
+		window:HookScript("OnHide", ns.OnWindowHidden)
 		return true
 	end
 	if ok and window then window:Hide() end
@@ -152,6 +153,10 @@ local function Build()
 	if inCombat then return false end
 	buildFailed = true
 	ns.Print(ns.L.WINDOW_FAILED)
+	-- A game update that changed what the window is built on (UI/Contract.lua): say what, for a bug report.
+	if ns.contractMissing then
+		ns.Print(ns.L.WINDOW_FAILED_MISSING, table.concat(ns.contractMissing, ", "))
+	end
 	return false
 end
 
@@ -162,7 +167,7 @@ function ns.GetFrame()
 end
 
 -- Whether our window can open on a class's talents (yours if nil): built, and the class's tree readable. Asked before
--- Blizzard's window is touched (design document 5.11), so when ours can't open Blizzard's simply opens or stays, and
+-- Blizzard's window is touched, so when ours can't open Blizzard's simply opens or stays, and
 -- nothing is hidden for a window that then doesn't come.
 function ns.CanOpen(class)
 	if not Build() then return false end
@@ -177,9 +182,66 @@ function ns.Toggle()
 	window:SetShown(not window:IsShown())
 end
 
--- The talent key and micro button open our window in place of Blizzard's (design document 5.11). Both call
--- TogglePlayerSpellsFrame; this runs after Blizzard's own toggle, so Blizzard's code stays untainted. In combat
--- Blizzard's window is left alone, as hiding a UI panel then isn't safe. Opening someone else's talents is too.
+-- When our window last closed. On Forever, Blizzard's talent window is a "center" UI panel
+-- (Camelot Blizzard_PlayerSpellsFrame.lua AreaAttributeForTab), and showing one closes every UISpecialFrames window,
+-- ours included (UIParentPanelManager.lua: CloseWindows, CloseSpecialWindows), before the hooks below run. GetTime()
+-- is the same all through one frame, so a window closed at this GetTime() was closed by the same click.
+local windowHiddenAt
+
+function ns.OnWindowHidden()
+	windowHiddenAt = GetTime()
+end
+
+-- The window's own sounds, as Blizzard's window plays them (UI/Frame.lua OnShow/OnHide). Quiet while ns.quietOpen is
+-- set; the close sound's handle is kept so ShowAfterBlizzard can stop it.
+local closeSoundHandle
+
+function ns.WindowSound(shown)
+	if shown then
+		if not ns.quietOpen then PlaySound(SOUNDKIT.UI_CLASS_TALENT_OPEN_WINDOW) end
+	else
+		local _, handle = PlaySound(SOUNDKIT.UI_CLASS_TALENT_CLOSE_WINDOW)
+		closeSoundHandle = handle
+	end
+end
+
+-- When Blizzard's talent window last opened (a post-hook on its OnShow, set at login).
+local blizzardShownAt
+
+-- After one of the hooks below has hidden Blizzard's window again: its sounds (its OnShow and OnHide play them
+-- unconditionally) are the last ones started, so they're stopped. That's its close sound, and its open sound only if it
+-- opened in this same moment: it didn't if it was already open (on the spellbook, say), as ShowUIPanel then returns
+-- early. Sound handles are consecutive numbers, and a sound stopped in the frame it started is never heard (both
+-- confirmed in game); the current handle comes from a sound played and stopped at once.
+local function StopBlizzardSounds()
+	local count = blizzardShownAt == GetTime() and 2 or 1
+	local _, handle = PlaySound(SOUNDKIT.UI_CLASS_TALENT_OPEN_WINDOW)
+	if type(handle) ~= "number" then return end
+	StopSound(handle)
+	for previous = handle - count, handle - 1 do
+		if C_Sound.IsPlaying(previous) then StopSound(previous) end
+	end
+end
+
+-- Shows ours after a hook below has hidden Blizzard's window again (Blizzard's sounds stopped): with its own open
+-- sound, or with none if Blizzard's opening had just closed it (Inspect Talents or a link with ours open: to the
+-- player it never closed, so its close sound is stopped too).
+local function ShowAfterBlizzard(window)
+	StopBlizzardSounds()
+	if windowHiddenAt == GetTime() then
+		if closeSoundHandle and C_Sound.IsPlaying(closeSoundHandle) then StopSound(closeSoundHandle) end
+		ns.quietOpen = true
+		window:Show()
+		ns.quietOpen = nil
+	else
+		window:Show()
+	end
+end
+
+-- Anything that opens Blizzard's talents through TogglePlayerSpellsFrame (other addons, macros) opens ours in place of
+-- Blizzard's; the talent key and micro button go straight to ours (below). This runs after
+-- Blizzard's own toggle, so Blizzard's code stays untainted. In combat Blizzard's window is left alone, as hiding a UI
+-- panel then isn't safe. Opening someone else's talents is too.
 local function AfterBlizzardToggle(suggestedTab, inspectUnit)
 	if inspectUnit or suggestedTab ~= PlayerSpellsUtil.FrameTabs.ClassTalents or InCombatLockdown() then return end
 	if not ns.CanOpen() then return end
@@ -187,7 +249,13 @@ local function AfterBlizzardToggle(suggestedTab, inspectUnit)
 	local blizzardShown = blizzard and blizzard:IsShown() and blizzard:IsFrameTabActive(suggestedTab)
 	if blizzardShown then
 		HideUIPanel(blizzard)
-		ns.Toggle()
+		-- Blizzard's opening just closed ours if it was open (above): then the call was to close it, so it stays
+		-- closed, with its own close sound. Toggling here would reopen it.
+		if windowHiddenAt == GetTime() then
+			StopBlizzardSounds()
+		else
+			ShowAfterBlizzard(ns.GetFrame():GetParent())
+		end
 	elseif not (blizzard and blizzard:IsShown()) then
 		-- Blizzard refused to open (below the talent level), or it was open and this toggle closed it while ours
 		-- was showing. Either way, toggle ours.
@@ -195,7 +263,7 @@ local function AfterBlizzardToggle(suggestedTab, inspectUnit)
 	end
 end
 
--- Someone else's talents (design document 5.14): a snapshot of the inspected player's build, shaped like a template
+-- Someone else's talents: a snapshot of the inspected player's build, shaped like a template
 -- but never saved, with `inspected` set so the window shows it read-only. Nil if it can't be read.
 local INSPECT_CONFIG_ID = Constants.TraitConsts.INSPECT_TRAIT_CONFIG_ID
 
@@ -208,28 +276,93 @@ function ns.ReadInspected(unit)
 	local model = ns.Tree.Get(class)
 	if not model then return end
 	local ranks, choices = ns.Templates.ReadConfig(model, INSPECT_CONFIG_ID)
-	-- Their own unspent points, as Blizzard's inspect view shows them, not the level cap's (0.7.1).
+	-- Their own unspent points, as Blizzard's inspect view shows them, not the level cap's.
 	local currencies = C_Traits.GetTreeCurrencyInfo(INSPECT_CONFIG_ID, model.treeID, false)
 	local unspent = currencies and currencies[1] and currencies[1].quantity
 	return { class = class, name = name, ranks = ranks, choices = choices, unspent = unspent, inspected = true }
 end
 
--- Inspect Talents (right-click a player, Interact) waits for the inspect data, then opens Blizzard's window on that
--- player's talents through PlayerSpellsUtil.OpenToClassTalentsTab(unit). This runs after it: the build is read while
--- the inspect data is still there, then ours opens in place of Blizzard's. Out of combat only, as for the talent key;
--- in combat, or if the build can't be read, Blizzard's window stays.
-local function AfterBlizzardInspect(inspectUnit)
-	if not inspectUnit or InCombatLockdown() then return end
-	local inspected = ns.ReadInspected(inspectUnit)
-	if not inspected or not ns.CanOpen(inspected.class) then return end
-	local blizzard = PlayerSpellsFrame
-	if blizzard and blizzard:IsShown() then
-		HideUIPanel(blizzard)
+-- A talent link's build: the link's options are "specID:level:string", the string in Blizzard's loadout format,
+-- read with Blizzard's own reader (Blizzard_ClassTalentImportExport.lua ReadLoadoutHeader, ReadLoadoutContent: a few
+-- bits per node, in C_Traits.GetTreeNodes order). Shaped like Inspect's snapshot, with the points the link's level
+-- would leave unspent. Nil if it can't be read (another serialisation version, a spec we don't know, a bad string).
+local CLASS_BY_SPEC = {}
+for class, specID in pairs(ns.SPEC_BY_CLASS) do CLASS_BY_SPEC[specID] = class end
+
+function ns.ReadLink(linkOptions)
+	local reader, export = ClassTalentImportExportMixin, ExportUtil
+	if not (reader and reader.ReadLoadoutHeader and reader.ReadLoadoutContent and export and export.MakeImportDataStream) then
+		return
 	end
-	local frame = ns.GetFrame()
-	-- Shown first: opening the window shows your own talents (5.5), so the inspected build goes in after.
-	frame:GetParent():Show()
-	frame:ShowTemplate(inspected)
+	local level, importText = (linkOptions or ""):match("^[^:]*:([^:]*):([^:]*)$")
+	level = tonumber(level)
+	if not level or not importText or importText == "" then return end
+	local ok, stream = pcall(export.MakeImportDataStream, importText)
+	if not ok or not stream then return end
+	local valid, version, specID
+	ok, valid, version, specID = pcall(reader.ReadLoadoutHeader, reader, stream)
+	if not ok or not valid or version ~= C_Traits.GetLoadoutSerializationVersion() then return end
+	local class = CLASS_BY_SPEC[specID]
+	local model = class and ns.Tree.Get(class)
+	if not model then return end
+	local content
+	ok, content = pcall(reader.ReadLoadoutContent, reader, stream, model.treeID)
+	if not ok or type(content) ~= "table" then return end
+	local nodeIDs = C_Traits.GetTreeNodes(model.treeID) or {}
+	local ranks, choices, spent = {}, {}, 0
+	for index, result in ipairs(content) do
+		local nodeID = nodeIDs[index]
+		local node = nodeID and model.nodes[nodeID]
+		-- Granted talents come free; only bought ranks are part of a build.
+		if node and result.isNodeSelected and not result.isNodeGranted then
+			local rank = result.isPartiallyRanked and math.min(result.partialRanksPurchased or 0, node.maxRanks) or node.maxRanks
+			if rank > 0 then
+				ranks[nodeID] = rank
+				spent = spent + rank
+				if result.isChoiceNode then choices[nodeID] = node.entryIDs[result.choiceNodeSelection] end
+			end
+		end
+	end
+	-- The points at the link's level: one a level from the first talent level to the cap.
+	local atLevel = math.max(0, model.cap - (ns.MaxLevel() - math.min(level, ns.MaxLevel())))
+	return {
+		class = class, name = ns.L.LINKED_BUILD_NAME:format(ns.ClassName(class)), ranks = ranks, choices = choices,
+		unspent = math.max(0, atLevel - spent), inspected = true,
+	}
+end
+
+-- Inspect Talents and talent links open Blizzard's window on someone else's build; these run after it and open ours on
+-- that build in its place. If the build can't be read, Blizzard's window stays. In combat, a Blizzard
+-- window that did open stays (hiding a UI panel then isn't safe). If Blizzard's was refused (its ShowUIPanel needs
+-- secure code in combat), ours opens on the build instead: ours isn't a UI panel, so Show works then, as for the
+-- talent key.
+local function OpenBuildInOurs(read, ...)
+	local blizzard = PlayerSpellsFrame
+	local blizzardShown = blizzard and blizzard:IsShown()
+	if blizzardShown and InCombatLockdown() then return end
+	local build = read(...)
+	if not build or not ns.CanOpen(build.class) then return end
+	local window = ns.GetFrame():GetParent()
+	if blizzardShown then
+		HideUIPanel(blizzard)
+		ShowAfterBlizzard(window)
+	else
+		window:Show()
+	end
+	-- Shown first: opening the window shows the last screen, so the build goes in after.
+	ns.GetFrame():ShowTemplate(build)
+end
+
+-- Inspect Talents (right-click a player, Interact) waits for the inspect data, then calls
+-- PlayerSpellsUtil.OpenToClassTalentsTab(unit); the build is read while the inspect data is still there.
+local function AfterBlizzardInspect(inspectUnit)
+	if inspectUnit then OpenBuildInOurs(ns.ReadInspected, inspectUnit) end
+end
+
+-- A talent link clicked in chat calls PlayerSpellsUtil.InspectLoadout(linkOptions) (ItemRefHandlers.lua). Blizzard
+-- allows one handler per link type, so this is a post-hook too.
+local function AfterBlizzardLink(linkOptions)
+	OpenBuildInOurs(ns.ReadLink, linkOptions)
 end
 
 ns.On("PLAYER_LOGIN", function()
@@ -239,17 +372,27 @@ ns.On("PLAYER_LOGIN", function()
 	if PlayerSpellsUtil and PlayerSpellsUtil.OpenToClassTalentsTab then
 		hooksecurefunc(PlayerSpellsUtil, "OpenToClassTalentsTab", AfterBlizzardInspect)
 	end
+	if PlayerSpellsUtil and PlayerSpellsUtil.InspectLoadout then
+		hooksecurefunc(PlayerSpellsUtil, "InspectLoadout", AfterBlizzardLink)
+	end
+	if PlayerSpellsFrame then
+		PlayerSpellsFrame:HookScript("OnShow", function() blizzardShownAt = GetTime() end)
+	end
+	-- The view config is shared with the game's talent links (Tree.viewHolds): note when it's loaded by
+	-- anything but us. Post-hooks on the game's API, so its callers run as before.
+	hooksecurefunc(C_ClassTalents, "InitializeViewLoadout", ns.Tree.OnViewLoadedElsewhere)
+	hooksecurefunc(C_ClassTalents, "ViewLoadout", ns.Tree.OnViewLoadedElsewhere)
 end)
 
 -- The talent key itself: bound (an override binding, as addons' own keys are) to a button that toggles our window, so
--- Blizzard's window never opens and closes behind it. In game, closing our window through the hook above failed
--- (8 Nov) without a cause found. The binding stays through combat (0.7.4): a binding may click an addon's own button
--- then, and our window is shown with Show, not Blizzard's panel system, so the key opens ours in combat too, with your
--- talents locked as in Blizzard's panel (Frame:IsLocked). Bindings can't change in combat, so a rebinding made then is
--- picked up when it ends.
+-- Blizzard's window never opens and closes behind it (closing ours through the hook above doesn't work: Blizzard's
+-- opening closes ours first). The binding stays through combat: a binding may click an addon's own button then, and
+-- our window is shown with Show, not Blizzard's panel system, so the key opens ours in combat too, with your talents
+-- locked as in Blizzard's panel (Frame:IsLocked). Bindings can't change in combat, so a rebinding made then is picked
+-- up when it ends.
 local keyButton = CreateFrame("Button", "TooManyTalentsKeyButton", UIParent)
 keyButton:Hide()
--- Ours, or Blizzard's when ours can't open (TMT-D1), opened from our code, which only happens in that failure. Not in
+-- Ours, or Blizzard's when ours can't open, opened from our code, which only happens in that failure. Not in
 -- combat: opening Blizzard's panel from addon code then isn't safe, so the game's "not in combat" message instead.
 local function KeyToggle()
 	local window = ns.frame and ns.frame:GetParent()
@@ -290,6 +433,46 @@ local function ArmTalentKey()
 	end
 end
 
+-- The talents micro button does what the talent key does, so Blizzard's window doesn't open and close first (playing
+-- its open and close sounds on top of ours), as it would through the toggle hook above. Its click script is replaced;
+-- its tooltip, highlight and alerts stay Blizzard's. That taints only this button's clicks, so Blizzard's toggle is
+-- never called from here in combat: as with the key, ours opens then, or the game's "not in combat" message if ours
+-- can't. Blizzard's click script (QuickKeybindButtonTemplate's, with PlayerSpellsMicroButtonMixin:OnClick appended,
+-- MainMenuBarMicroButtons.xml) still runs in quick keybind mode (out of combat only), where it binds the clicked mouse
+-- button and toggles nothing.
+local microButton
+
+local function TakeOverMicroButton()
+	microButton = TalentMicroButton
+	if not microButton then return end
+	local blizzardClick = microButton:GetScript("OnClick")
+	microButton:SetScript("OnClick", function(self, mouseButton, down)
+		if KeybindFrames_InQuickKeybindMode and KeybindFrames_InQuickKeybindMode() then
+			if blizzardClick then blizzardClick(self, mouseButton, down) end
+			return
+		end
+		KeyToggle()
+		ns.UpdateMicroButton()
+	end)
+	hooksecurefunc(microButton, "UpdateMicroButton", ns.UpdateMicroButton)
+end
+
+-- The micro button looks pressed while our window is open, as it does for Blizzard's
+-- (PlayerSpellsMicroButtonMixin:UpdateMicroButton). Blizzard's update only knows its own window, and pressing the
+-- button leaves it pressed (its OnMouseDown calls SetPushed, which only Blizzard's window opening or closing put right,
+-- and that window doesn't open here), so this runs after Blizzard's update, after a click, and when our window shows or
+-- hides (UI/Frame.lua). Left alone while it's disabled (below the talent level), as Blizzard's update disables it.
+function ns.UpdateMicroButton()
+	if not microButton or not microButton:IsEnabled() then return end
+	local window = ns.frame and ns.frame:GetParent()
+	if window and window:IsShown() then
+		microButton:SetPushed()
+	else
+		microButton:SetNormal()
+	end
+end
+
 ns.On("PLAYER_LOGIN", ArmTalentKey)
+ns.On("PLAYER_LOGIN", TakeOverMicroButton)
 ns.On("UPDATE_BINDINGS", ArmTalentKey)
 ns.On("PLAYER_REGEN_ENABLED", ArmTalentKey)

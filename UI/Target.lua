@@ -1,6 +1,6 @@
 local _, ns = ...
 
--- A template set as the target for your talents (design document 5.12), shown on your own talents as the rank the
+-- A template set as the target for your talents, shown on your own talents as the rank the
 -- target wants, at the top of each talent that differs from it: light blue where you still need points, red where
 -- you have points (or a choice) the target doesn't. Nothing on talents that already match. Talented's idea
 -- (Talented/view.lua:235-253), without its grey "done" badges.

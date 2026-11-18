@@ -1,7 +1,7 @@
 local _, ns = ...
 local L = ns.L
 
--- The options (design document 5.10), in a small panel beside the talent window, opened from the Actions menu or
+-- The options, in a small panel beside the talent window, opened from the Actions menu or
 -- /tmt options. Changes show at once.
 
 local Options = {}
@@ -22,7 +22,7 @@ local function Changed()
 	if ns.frame then ns.frame:ApplySettings() end
 end
 
--- No tooltips: clicking an option shows what it does (user's request, 0.6.3).
+-- No tooltips: clicking an option shows what it does.
 local function Checkbox(parent, key, title)
 	local box = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
 	box:SetSize(26, 26)
@@ -85,7 +85,7 @@ local function Create()
 	title:SetPoint("TOP", 0, -5)
 	title:SetText(L.OPTIONS_TITLE)
 
-	-- As wide as what's in it (design document 5.10): the widest of the title (with room for the close button each
+	-- As wide as what's in it: the widest of the title (with room for the close button each
 	-- side), each slider with its value and each check box with its text, plus the padding.
 	local widest = title:GetUnboundedStringWidth() + 2 * CLOSE_ROOM
 	local sliders = {}
@@ -108,6 +108,7 @@ local function Create()
 		{ "hideBottomBar", L.OPT_HIDE_BOTTOM_BAR },
 		{ "hideSearch", L.OPT_HIDE_SEARCH },
 		{ "pointsInTabRow", L.OPT_POINTS_IN_TAB_ROW },
+		{ "templateLevel", L.OPT_TEMPLATE_LEVEL },
 	}) do
 		local box = Checkbox(panel, option[1], option[2])
 		box:SetPoint("TOPLEFT", PAD - 4, y)

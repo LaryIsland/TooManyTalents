@@ -1,27 +1,31 @@
 local _, ns = ...
 local L = ns.L
 
--- Our own copy of Forever's talent panel (design document 2): TalentFrameBaseMixin (Blizzard_SharedTalentUI) with
--- the class panel's behaviour copied from Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentsFrame.lua and its
--- Camelot overrides. Nothing here touches Blizzard's own window.
+-- Our own copy of Forever's talent panel: TalentFrameBaseMixin (Blizzard_SharedTalentUI) with
+-- the class panel's behaviour from Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentsFrame.lua and its Camelot
+-- overrides. This file is our own logic; the parts copied from Blizzard's code are in UI/BlizzardCopy.lua, each with
+-- its source, and the layout in UI/Layout.lua. Nothing here touches Blizzard's own window.
 --
 -- It shows one of two things:
 --  * "player": your own talents, for either spec group, through your real config. Your active spec is editable and
---    saved with Apply (5.5); the other spec group and a read-only view are locked.
+--    saved with Apply; the other spec group and a read-only view are locked.
 --  * "template": a template, through the view config (-3), with each node's state patched from the template
---    (Templates.PatchNodeInfo). Clicks change the template, never your talents (5.6). Someone else's talents (5.14)
+--    (Templates.PatchNodeInfo). Clicks change the template, never your talents. Someone else's talents
 --    are shown the same way, read-only.
 
 local VIEW_CONFIG_ID = ns.VIEW_CONFIG_ID
-local NODE_PURCHASE_IN_PROGRESS_FX_1 = 166
-local NODE_PURCHASE_COMPLETE_FX_1 = 150
-local PURCHASE_FX_DELAY = 1.2
--- Talent buttons sit at ButtonsParent's level plus up to about 500 (GetFrameLevelForButton); the choice flyout is at 2000.
-local RESET_BUTTON_LEVEL = 900
+-- Above the talent buttons, for our controls over the tree area (the per-tree reset buttons, Apply and Undo in the
+-- corner), which the buttons would otherwise take clicks from: they sit at ButtonsParent's level plus up to about 500
+-- (GetFrameLevelForButton). Below the choice flyout (2000).
+ns.ABOVE_TALENTS_LEVEL = 900
 
 -- Events only the class panel needs, while shown (Blizzard_ClassTalentsFrame.lua ClassTalentsFrameEvents).
 local SHOWN_EVENTS = { "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }
-local SHOWN_UNIT_EVENTS = { "UNIT_AURA", "UNIT_SPELLCAST_SUCCEEDED" }
+-- The two failures are for a spec switch that doesn't finish (Frame:SetSpecSwitchCastBarActive).
+local SHOWN_UNIT_EVENTS = { "UNIT_AURA", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED" }
+
+-- How long a view config that won't load is left before it's tried again (Frame:EnsureView).
+local VIEW_RETRY_SECONDS = 2
 
 -- Node events that only matter for a real config. On a template we refresh ourselves.
 local NODE_EVENTS = {
@@ -33,8 +37,8 @@ local NODE_EVENTS = {
 }
 
 -- The game's class IDs, fixed (the keys of Blizzard's ClassVisuals, Camelot Blizzard_ClassTalentUtil.lua). Not read
--- with GetClassInfo(1 .. GetNumClasses()): on Forever that stopped short of the druid's 11 (15 Nov), so the druid got
--- no class visuals and the default pan offset, 60 px off Blizzard's, and its talents sat left of their headers.
+-- with GetClassInfo(1 .. GetNumClasses()): on Forever that stops short of the druid's 11, which would leave the druid
+-- without class visuals and its talents left of their headers.
 local CLASS_IDS = {
 	WARRIOR = 1, PALADIN = 2, HUNTER = 3, ROGUE = 4, PRIEST = 5, SHAMAN = 7, MAGE = 8, WARLOCK = 9, DRUID = 11,
 }
@@ -45,8 +49,8 @@ TooManyTalentsWindowMixin = {}
 local Window = TooManyTalentsWindowMixin
 
 -- Puts the window back where it was last placed (dragged or centred), by its top left corner, if it ever was. Called
--- by every layout, after the window's final size is set (UI/Layout.lua): an anchor set on load didn't survive until the
--- first layout in game (15 Nov, the window came back at its default place after every reload).
+-- by every layout, after the window's final size is set (UI/Layout.lua): an anchor set on load doesn't survive until the
+-- first layout.
 function ns.RestoreWindowPosition(window)
 	local saved = ns.saved.window
 	-- Mid-drag the mouse has it; it's saved when dropped.
@@ -61,12 +65,19 @@ function Window:OnLoad()
 	self.tmtLoaded = true
 end
 
+-- The open and close sounds, Blizzard's window's own (Core.lua ns.WindowSound, which keeps them in step with Blizzard's
+-- window when the hooks open ours in its place).
 function Window:OnShow()
-	PlaySound(SOUNDKIT.UI_CLASS_TALENT_OPEN_WINDOW)
+	ns.WindowSound(true)
+	-- When it opened, for Frame:NoteView (no switch sound on opening). Not when it's shown again in the same moment
+	-- Blizzard's window closed it (ns.quietOpen): to the player it stayed open.
+	if not ns.quietOpen then self.tmtOpenedAt = GetTime() end
+	ns.UpdateMicroButton()
 end
 
 function Window:OnHide()
-	PlaySound(SOUNDKIT.UI_CLASS_TALENT_CLOSE_WINDOW)
+	ns.WindowSound(false)
+	ns.UpdateMicroButton()
 end
 
 function Window:OnDragStart()
@@ -88,8 +99,8 @@ function Window:OnDragStop()
 	PlaceWindow(self, self:GetLeft(), self:GetTop())
 end
 
--- Shift-right-click anywhere on the window that isn't a control centres it on the screen at its current size (user's
--- request, design document 5.11). The talent area's own frames take the mouse, so they pass it on (Frame:OnLoad).
+-- Shift-right-click anywhere on the window that isn't a control centres it on the screen at its current size. The
+-- talent area's own frames take the mouse, so they pass it on (Frame:OnLoad).
 function Window:OnMouseUp(button)
 	if button ~= "RightButton" or not IsShiftKeyDown() then return end
 	local screenWidth, screenHeight = UIParent:GetSize()
@@ -102,6 +113,12 @@ TooManyTalentsFrameMixin = CreateFromMixins(TalentFrameBaseMixin, ClassTalentSea
 local Frame = TooManyTalentsFrameMixin
 
 function Frame:OnLoad()
+	-- First, while the window, panel and background still have Frame.xml's sizes (UI/Layout.lua).
+	self:ReadBlizzardSizes()
+	-- Blizzard's code that the panel relies on, before any of it is used (UI/Contract.lua): if a game update
+	-- changed it, the window isn't built (tmtLoaded stays unset) and Blizzard's opens instead.
+	ns.contractMissing = ns.Contract.CheckBlizzard()
+	if ns.contractMissing then return end
 	self.initialBasePanOffsetX = self.basePanOffsetX
 	self.initialBasePanOffsetY = self.basePanOffsetY
 	self.initialBottomPadding = self.bottomPadding
@@ -114,6 +131,10 @@ function Frame:OnLoad()
 	self.specTabID = self:AddNamedTab(DUAL_SPEC_PRIMARY)
 	self.actionsTabID = self:AddNamedTab(L.TAB_ACTIONS)
 	self.templatesTabID = self:AddNamedTab(L.TAB_TEMPLATES)
+	-- The tab system's sound (TabSystemTemplate's tabSelectSound) is played by NoteView on every switch of what's shown,
+	-- the spec tab's included, so the tab system itself doesn't play it too.
+	self.switchSound = self.TabSystem.tabSelectSound or SOUNDKIT.IG_CHARACTER_INFO_TAB
+	self.TabSystem.tabSelectSound = nil
 
 	self.treeHeaderPool = CreateFramePool("FRAME", self, "ClassTalentTreeHeaderTemplate")
 	self.treeHeaders = {}
@@ -158,6 +179,10 @@ function Frame:OnLoad()
 	self:InitializeSearchOptionsDropdown()
 	ns.TalentedStyle.Init(self)
 
+	-- And what the built panel has from Blizzard's mixins and templates (fields, children, a tab and a tree header).
+	ns.contractMissing = ns.Contract.CheckPanel(self)
+	if ns.contractMissing then return end
+
 	self:RegisterEvent("PLAYER_TALENT_UPDATE")
 	self:RegisterEvent("ACTIVE_COMBAT_CONFIG_CHANGED")
 	-- Reached only if nothing above errored: ns.CanOpen (Core.lua) checks it before Blizzard's window is touched.
@@ -165,8 +190,8 @@ function Frame:OnLoad()
 end
 
 function Frame:OnShow()
-	-- The window always opens on your own talents (5.5).
-	self:ShowPlayerTalents()
+	-- The window opens where you last had it this session.
+	self:ShowLastScreen()
 
 	TalentFrameBaseMixin.OnShow(self)
 	FrameUtil.RegisterFrameForEvents(self, SHOWN_EVENTS)
@@ -181,16 +206,19 @@ function Frame:OnHide()
 	FrameUtil.UnregisterFrameForEvents(self, SHOWN_UNIT_EVENTS)
 	self:SetBackgroundAnimationsPlaying(false)
 	self:SetDisabledOverlayShown(false)
+	-- As Camelot's ClassTalentsFrame:OnHide (HideSpecChangeElements); a switch still going is caught on the next open
+	-- by ACTIVE_COMBAT_CONFIG_CHANGED.
+	self:SetSpecSwitchCastBarActive(false)
 	self.NameBox:ClearFocus()
 	ns.Options.Hide()
-	ns.Menus.Refresh()
+	ns.Flyout.Close()
 end
 
 function Frame:OnEvent(event, ...)
 	if self.mode == "template" and NODE_EVENTS[event] then return end
 
 	if event == "ACTIVE_COMBAT_CONFIG_CHANGED" then
-		self:SetCommitSpinnerShown(false)
+		self:SetSpecSwitchCastBarActive(false)
 		if self:IsShown() and self.mode == "player" then
 			self:ShowPlayerTalents(self.specGroup)
 		end
@@ -207,6 +235,17 @@ function Frame:OnEvent(event, ...)
 			self:SetCommitVisualsActive(false, TalentFrameBaseMixin.VisualsUpdateReasons.CommitStoppedComplete)
 			self:SetCommitCompleteVisualsActive(true)
 		end
+	elseif (event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED") and self.tmtSpecSwitching then
+		-- A spec switch that didn't finish (moving, interrupted): the spinner and grey overlay go, back to the spec
+		-- group as it was (Blizzard's spec tab does the same on these events, Mainline
+		-- Blizzard_ClassSpecializationsFrame.lua:185). Only once nothing is being cast, so a failed press of another
+		-- spell while the switch is cast doesn't end it.
+		if not UnitCastingInfo("player") then
+			self:SetSpecSwitchCastBarActive(false)
+			if self.mode == "player" then
+				self:ShowPlayerTalents(self.specGroup)
+			end
+		end
 	end
 
 	TalentFrameBaseMixin.OnEvent(self, event, ...)
@@ -215,79 +254,6 @@ function Frame:OnEvent(event, ...)
 	if event == "CONFIG_COMMIT_FAILED" and self:IsShown() and self.mode == "player" then
 		self:ShowPlayerTalents(self.specGroup)
 	end
-end
-
--- TalentFrameBaseMixin's, without its EventRegistry triggers: those run Blizzard's listeners, and from here they
--- would run tainted.
-function Frame:OnUpdate()
-	self:SetScript("OnUpdate", nil)
-
-	if self:IsTreeDirty() then
-		self:LoadTalentTree()
-	else
-		local buttonsToUpdate = {}
-		for button in self:EnumerateAllTalentButtons() do
-			if self.dirtyNodeIDSet[button:GetNodeID()] then
-				buttonsToUpdate[button] = button.UpdateNodeInfo
-			elseif self.dirtyEntryIDSet[button:GetEntryID()] then
-				buttonsToUpdate[button] = button.UpdateEntryInfo
-			elseif self.definitionInfoCache[button:GetDefinitionID()] then
-				buttonsToUpdate[button] = button.UpdateEntryContentInfo
-			end
-		end
-		for condID in pairs(self.dirtyCondIDSet) do
-			self.condInfoCache[condID] = nil
-		end
-		for subTreeID in pairs(self.dirtySubTreeIDSet) do
-			self.subTreeInfoCache[subTreeID] = nil
-		end
-		for definitionID in pairs(self.dirtyDefinitionIDSet) do
-			self.definitionInfoCache[definitionID] = nil
-		end
-		for entryID in pairs(self.dirtyEntryIDSet) do
-			self.entryInfoCache[entryID] = nil
-		end
-		for nodeID in pairs(self.dirtyNodeIDSet) do
-			self.nodeInfoCache[nodeID] = nil
-		end
-		self.dirtySubTreeIDSet = {}
-		self.dirtyCondIDSet = {}
-		self.dirtyDefinitionIDSet = {}
-		self.dirtyEntryIDSet = {}
-		self.dirtyNodeIDSet = {}
-
-		if self.treeInfoDirty then
-			self.treeInfoDirty = false
-			self:UpdateTreeInfo()
-		end
-		for button, update in pairs(buttonsToUpdate) do
-			update(button)
-		end
-		for button, isDirty in pairs(self.buttonsWithDirtyEdges) do
-			if isDirty then
-				self:UpdateEdgesForButton(button)
-			end
-		end
-	end
-
-	self:UpdateFullSearchResults()
-	self:UpdateConfigButtonsState()
-	ns.TalentedStyle.Refresh(self)
-end
-
--- TalentFrameBaseMixin's, without the EventRegistry trigger (see OnUpdate).
-function Frame:LoadTalentTreeInternal()
-	self:ReleaseAllTalentButtons()
-	self:ClearInfoCaches()
-	self:SetZoomLevel(1)
-	self:SetPanOffset(0, 0)
-	for _, nodeID in ipairs(self:GetTreeNodes()) do
-		self:InstantiateTalentButton(nodeID)
-	end
-	self:RefreshGates()
-	self:MarkTreeClean()
-	self:UpdateConfigButtonsState()
-	self:ApplyLayout()
 end
 
 -- What's shown ------------------------------------------------------------------------------------------------------
@@ -301,15 +267,53 @@ function Frame:IsActiveTabSelected()
 	return self.mode == "player" and self.specGroup == ns.ActiveSpecGroup()
 end
 
+-- The last screen shown this session, to open on next time: your talents (`specGroup` set only for the spec
+-- group that wasn't active, so your active spec stays the one shown after a spec change) or a template. Someone
+-- else's build isn't kept: closing on it opens on whatever came before it. Only in memory, so the first open of a
+-- session (or after a reload) is always your own talents.
+local lastScreen
+
+function Frame:ShowLastScreen()
+	local template = lastScreen and lastScreen.template
+	if template then
+		-- Still saved under its name (renames keep the same table), and its class's tree readable. Checked here, not
+		-- left to ShowTemplate, so a tree that can't be read falls back to your talents without its chat line.
+		local ok, model = pcall(ns.Tree.Get, template.class)
+		if ns.Templates.Get(template.class, template.name) == template and ok and model and self:ShowTemplate(template) then
+			return
+		end
+	end
+	local specGroup = lastScreen and lastScreen.specGroup
+	if specGroup and specGroup > GetNumSpecGroups() then specGroup = nil end
+	self:ShowPlayerTalents(specGroup)
+end
+
+-- The spec tab's sound whenever what's shown changes while the window is already open:
+-- between your talents (either spec group), templates, someone else's build and a talent link. Not when the window
+-- opens (Window:OnShow notes when; showing its last screen or the build it opened for is part of opening), and not
+-- when the same thing is shown again (a refresh). Nor while it's shown again in the moment Blizzard's window closed it
+-- (ns.quietOpen, Inspect Talents or a link with ours open): its last screen comes back first, then the build, and only
+-- the build is a switch (one sound, not two). `key` is the template, or "player<spec group>".
+function Frame:NoteView(key)
+	local window = self:GetParent()
+	if self.viewKey ~= nil and key ~= self.viewKey and window:IsShown() and window.tmtOpenedAt ~= GetTime()
+		and not ns.quietOpen then
+		PlaySound(self.switchSound)
+	end
+	self.viewKey = key
+end
+
 -- Your own talents for a spec group (the active one if nil).
 function Frame:ShowPlayerTalents(specGroup)
 	local activeGroup = ns.ActiveSpecGroup()
 	specGroup = specGroup or activeGroup
+	lastScreen = { specGroup = specGroup ~= activeGroup and specGroup or nil }
 	self.mode = "player"
 	self.template = nil
 	self.specGroup = specGroup
 	self.model = ns.Tree.Get(ns.PLAYER_CLASS)
 	self.viewOnly = false
+	self.viewRetryAt = nil
 	TabSystemOwnerMixin.SetTab(self, self.specTabID)
 
 	local configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(specGroup)
@@ -333,37 +337,49 @@ function Frame:ShowPlayerTalents(specGroup)
 		self.ActiveSpec:SetGlow(true)
 	end
 	self:RefreshChrome()
+	self:NoteView("player" .. specGroup)
 end
 
+-- Returns whether it's shown. It isn't if its class's tree can't be read or the game won't load it into the view
+-- config: it says so, and the window stays on what it showed (your own talents, if it showed nothing yet).
 function Frame:ShowTemplate(template)
 	local model = ns.Tree.Get(template.class)
-	if not model then
-		ns.Print(L.NO_TREE_DATA, ns.ClassName(template.class))
-		return
-	end
-	self.NameBox:ClearFocus()
-	self.mode = "template"
-	self.template = template
-	self.model = model
-	-- Talents no longer in the game (after a patch) are dropped, giving their points back, and it says so (design
-	-- document 4).
-	local orphans = ns.Templates.RemoveOrphans(model, template)
+	-- Talents no longer in the game (after a patch) are dropped, giving their points back, and it says so.
+	local orphans = model and ns.Templates.RemoveOrphans(model, template) or 0
 	if orphans > 0 then
 		ns.Print(L.ORPHANS_FOUND, template.name, orphans)
 	end
-	ns.Templates.LoadIntoView(model, template)
+	if not model or not ns.Templates.LoadIntoView(model, template) then
+		ns.Print(L.NO_TREE_DATA, ns.ClassName(template.class))
+		if not self.mode then
+			self:ShowPlayerTalents()
+		end
+		return false
+	end
+	self.NameBox:ClearFocus()
+	if not template.inspected then lastScreen = { template = template } end
+	self.mode = "template"
+	self.template = template
+	self.model = model
+	self.viewRetryAt = nil
 	self.TabSystem:SetTabVisuallySelected(nil)
 	self:UpdateClassVisuals()
 	self:SetDisabledOverlayShown(false)
 	self:SetConfigID(VIEW_CONFIG_ID, true)
 	self:RefreshChrome()
+	self:NoteView(template)
+	return true
 end
 
 -- Called after a template's ranks change: reload the view config and redraw every button in place, so the tooltip
--- under the mouse stays up while clicking.
+-- under the mouse stays up while clicking. If the game won't load it now, back to your own talents.
 function Frame:RefreshTemplate()
 	if self.mode ~= "template" then return end
-	ns.Templates.LoadIntoView(self.model, self.template)
+	if not ns.Templates.LoadIntoView(self.model, self.template) then
+		ns.Print(L.NO_TREE_DATA, ns.ClassName(self.template.class))
+		self:ShowPlayerTalents()
+		return
+	end
 	self:ClearInfoCaches()
 	for button in self:EnumerateAllTalentButtons() do
 		button:UpdateNodeInfo()
@@ -433,7 +449,7 @@ function Frame:RefreshChrome()
 	self:UpdateConfigButtonsState()
 	self:RefreshTreeHeaders()
 	self:ApplyLayout()
-	ns.Menus.Refresh()
+	ns.Flyout.Close()
 end
 
 -- The spec tab names the group on show (on a template, your active one, which it goes back to), with Blizzard's
@@ -468,10 +484,10 @@ end
 
 -- Editing ---------------------------------------------------------------------------------------------------------
 
--- Your active spec is edited as in Blizzard's panel and saved with Apply (5.5). A spec that isn't active, or a
+-- Your active spec is edited as in Blizzard's panel and saved with Apply. A spec that isn't active, or a
 -- read-only view, is locked as in Blizzard's panel, and so is your active spec whenever the game won't let talents
 -- change (in combat, among others: C_ClassTalents.CanEditTalents, as Blizzard's ClassTalentsFrame:IsLocked, its reason
--- shown in the talents' tooltips; refreshed on PLAYER_REGEN_*). Someone else's build (5.14) is locked too, keeping its
+-- shown in the talents' tooltips; refreshed on PLAYER_REGEN_*). Someone else's build is locked too, keeping its
 -- learned talents' colours and showing the rest as locked, as Blizzard's inspect view does. Templates stay editable in
 -- combat: they're the addon's own data.
 function Frame:IsLocked()
@@ -481,7 +497,7 @@ function Frame:IsLocked()
 	return not canEdit, errorMessage
 end
 
--- Someone else's talents (5.14): shown like a template, read-only, never saved.
+-- Someone else's talents: shown like a template, read-only, never saved.
 function Frame:IsShowingInspected()
 	return self.mode == "template" and self.template.inspected == true
 end
@@ -549,19 +565,58 @@ function Frame:AddCostToTooltip(tooltip, costs)
 	end
 end
 
+-- The view config (-3) is shared with the game's talent links: opening one loads its build there, over what
+-- we loaded. What's cached was read from ours and stays right; before anything else is read from it, what's shown is
+-- loaded again if the view config no longer holds it (Tree.viewHolds). A load the game refuses isn't tried again for a
+-- moment, so a redraw doesn't try once per talent.
+function Frame:EnsureView()
+	local wanted = (self.mode == "template" and self.template) or (self.viewOnly and "empty:" .. ns.PLAYER_CLASS) or nil
+	if not wanted or ns.Tree.viewHolds == wanted then return end
+	if self.viewRetryAt and GetTime() < self.viewRetryAt then return end
+	local loaded
+	if wanted == self.template then
+		loaded = ns.Templates.LoadIntoView(self.model, self.template)
+	else
+		loaded = ns.Tree.InitializeView(ns.PLAYER_CLASS) ~= nil
+	end
+	self.viewRetryAt = not loaded and GetTime() + VIEW_RETRY_SECONDS or nil
+end
+
+function Frame:GetAndCacheEntryInfo(entryID)
+	if not self.entryInfoCache[entryID] then self:EnsureView() end
+	return TalentFrameBaseMixin.GetAndCacheEntryInfo(self, entryID)
+end
+
+-- The shown template's points added up once for a whole redraw (Templates.Tally), instead of once per talent
+-- and rule. Every change to its ranks redraws through ClearInfoCaches (RefreshTemplate), which drops it.
+function Frame:GetTally()
+	local ranks = self.template.ranks
+	if not self.tally or self.tally.ranks ~= ranks then
+		self.tally = ns.Templates.Tally(self.model, ranks)
+	end
+	return self.tally
+end
+
+function Frame:ClearInfoCaches()
+	self.tally = nil
+	TalentFrameBaseMixin.ClearInfoCaches(self)
+end
+
 function Frame:GetAndCacheNodeInfo(nodeID)
+	if not self.nodeInfoCache[nodeID] then self:EnsureView() end
 	local info = TalentFrameBaseMixin.GetAndCacheNodeInfo(self, nodeID)
 	if info and self.mode == "template" and not info.tmtPatched then
-		ns.Templates.PatchNodeInfo(self.model, self.template, info)
+		ns.Templates.PatchNodeInfo(self.model, self.template, info, self:GetTally())
 		info.tmtPatched = true
 	end
 	return info
 end
 
 function Frame:GetAndCacheCondInfo(condID, ...)
+	if not self.condInfoCache[condID] then self:EnsureView() end
 	local info = TalentFrameBaseMixin.GetAndCacheCondInfo(self, condID, ...)
 	if info and self.mode == "template" and not info.tmtPatched then
-		ns.Templates.PatchCondInfo(self.model, self.template, condID, info)
+		ns.Templates.PatchCondInfo(self.model, self.template, condID, info, self:GetTally())
 		info.tmtPatched = true
 	end
 	return info
@@ -577,9 +632,10 @@ end
 function Frame:UpdateTreeCurrencyInfo(skipButtonUpdates)
 	if self.mode == "template" then
 		local spent, perTree = ns.Templates.Points(self.model, self.template.ranks)
-		-- Someone else's build shows their own unspent points (5.14); a template, what the level cap leaves.
+		-- Someone else's build shows their own unspent points; a template, what the level cap leaves.
 		local inspectedUnspent = self:IsShowingInspected() and self.template.unspent
 		self.templatePointsLeft = inspectedUnspent or (self.model.cap - spent)
+		self.templateSpent = spent
 		self.templateSpentPerTree = perTree
 		self.treeCurrencyInfo = {}
 		self.treeCurrencyInfoMap = {}
@@ -596,7 +652,30 @@ function Frame:UpdateTreeCurrencyInfo(skipButtonUpdates)
 	end
 end
 
+-- With "Level required on templates", a template (not someone else's build) shows the level its points need
+-- instead of the points left: a point a level from the first talent level, the levels before it read from the level
+-- cap and the points it gives (the model's cap). An empty template needs no level: a grey 0, jumping to the first
+-- talent level with its first point. In the game's green for that number (ClassTalentCurrencyDisplayMixin:SetAmount);
+-- grey at the level cap too, as Blizzard's 0 points left is (the template has spent every point).
+function Frame:IsShowingTemplateLevel()
+	return self.mode == "template" and ns.settings.templateLevel and not self:IsShowingInspected()
+end
+
 function Frame:RefreshCurrencyDisplay()
+	local display = self.ClassCurrencyDisplay
+	local showLevel = self:IsShowingTemplateLevel()
+	local labelText = showLevel and L.LEVEL_REQUIRED_LABEL or UNSPENT_POINTS
+	if display.UnspentLabel:GetText() ~= labelText then
+		display.UnspentLabel:SetText(labelText)
+	end
+	if showLevel then
+		local spent = self.templateSpent or 0
+		local level = spent > 0 and (ns.MaxLevel() - self.model.cap + spent) or 0
+		display:SetAmount(level)
+		local color = (spent == 0 or level >= ns.MaxLevel()) and GRAY_FONT_COLOR or GREEN_FONT_COLOR
+		display.CurrentAmountContainer.CurrencyAmount:SetTextColor(color:GetRGBA())
+		return
+	end
 	local amount
 	if self.mode == "template" then
 		amount = self.templatePointsLeft or 0
@@ -604,11 +683,11 @@ function Frame:RefreshCurrencyDisplay()
 		local currency = self.treeCurrencyInfo and self.treeCurrencyInfo[1]
 		amount = currency and currency.quantity or 0
 	end
-	self.ClassCurrencyDisplay:SetAmount(amount)
+	display:SetAmount(amount)
 end
 
 -- Blizzard's headers are pooled and rebuilt on every change (Camelot ClassTalentsFrame.lua:94-121); ours too, placed
--- by the layout. The reset buttons are our own frames, re-anchored after each rebuild (design document 5.7).
+-- by the layout. The reset buttons are our own frames, re-anchored after each rebuild.
 function Frame:RefreshTreeHeaders()
 	self.treeHeaderPool:ReleaseAll()
 	self.resetButtonPool:ReleaseAll()
@@ -651,7 +730,7 @@ function Frame:RefreshTreeHeaders()
 			reset:SetPoint("LEFT", header.Name, "RIGHT", 6, 0)
 			-- Above the talent buttons (ButtonsParent + about 500), which otherwise take its clicks where a top-row
 			-- talent reaches up beside the tree's name.
-			reset:SetFrameLevel(self.ButtonsParent:GetFrameLevel() + RESET_BUTTON_LEVEL)
+			reset:SetFrameLevel(self.ButtonsParent:GetFrameLevel() + ns.ABOVE_TALENTS_LEVEL)
 			reset:Show()
 		end
 	end
@@ -690,59 +769,11 @@ function Frame:GetTraitTreeName(_, groupIDs)
 	return ""
 end
 
--- Gates ------------------------------------------------------------------------------------------------------------
-
-function Frame:RefreshGates()
-	self.traitCurrencyIDToGate = {}
-	TalentFrameBaseMixin.RefreshGates(self)
-end
-
-function Frame:ShouldDisplayGate(firstButton, condInfo)
-	return TalentFrameBaseMixin.ShouldDisplayGate(self, firstButton, condInfo)
-		and (not condInfo.traitCurrencyID or not self.traitCurrencyIDToGate[condInfo.traitCurrencyID])
-end
-
-function Frame:OnGateDisplayed(gate, _, condInfo)
-	if condInfo.traitCurrencyID then
-		self.traitCurrencyIDToGate[condInfo.traitCurrencyID] = gate
-	end
-end
-
-function Frame:AnchorGate(gate, button)
-	gate:SetPoint("RIGHT", button, "LEFT")
-end
-
--- Layering: lower rows draw over higher ones so shadows line up (Blizzard_ClassTalentsFrame.lua:730-749).
-function Frame:GetFrameLevelForButton(nodeInfo)
-	return 500 - Round(((nodeInfo.posY - 1500) / 600) * 10)
-end
-
 -- Applying your own changes (the Apply button) ----------------------------------------------------------------------
-
-function Frame:HasValidConfig()
-	return self:GetConfigID() ~= nil and self:GetTalentTreeID() ~= nil
-end
 
 function Frame:HasAnyConfigChanges()
 	if self.mode ~= "player" or self.viewOnly or self:IsCommitInProgress() or not self:HasValidConfig() then return false end
 	return C_Traits.ConfigHasStagedChanges(self:GetConfigID())
-end
-
-function Frame:HasAnyRefundInvalidNodes()
-	for button in self:EnumerateAllTalentButtons() do
-		if button:IsRefundInvalid() then return true end
-	end
-	return false
-end
-
-function Frame:CanChangeTalents()
-	if self:HasAnyRefundInvalidNodes() then
-		return false, false, TALENT_FRAME_REFUND_INVALID_ERROR
-	end
-	if self:IsCommitInProgress() then
-		return false, false
-	end
-	return C_ClassTalents.CanChangeTalents()
 end
 
 -- Whether there are changes, whether they can be applied, and why not.
@@ -759,21 +790,13 @@ function Frame:ApplyConfig()
 	end
 end
 
-function Frame:CommitConfigInternal()
-	return C_ClassTalents.CommitConfig(nil)
-end
-
 function Frame:RollbackConfig(...)
 	TalentFrameBaseMixin.RollbackConfig(self, ...)
 	self:UpdateTreeCurrencyInfo()
 	self:UpdateConfigButtonsState()
 end
 
-function Frame:GetConfigCommitErrorString()
-	return TALENT_FRAME_CONFIG_OPERATION_TOO_FAST
-end
-
--- Apply and Undo, on your own talents: in the bottom bar, or in the tree area's bottom-left corner without it (Layout).
+-- Apply and Undo, on your own talents: in the bottom bar, or in the tree area's bottom-right corner without it (Layout).
 -- Blizzard's green glow is its shared GlowEmitterFactory, so ours keeps to the button's own yellow glow.
 function Frame:UpdateConfigButtonsState()
 	local shown = self.mode == "player" and not self.viewOnly
@@ -783,8 +806,20 @@ function Frame:UpdateConfigButtonsState()
 	self.ApplyButton:SetDisabledTooltip(applyError)
 	self.ApplyButton.YellowGlow:SetShown(pending)
 	self.UndoButton:SetShown(shown and pending)
+
+	-- Blizzard's UpdatePendingChangeState: the talents' "not on your action bars" state is worked out again when
+	-- changes start or stop being staged (HasAnyPendingChanges).
+	local wasPending = self.tmtPending
+	self.tmtPending = pending == true
+	if self.tmtPending ~= (wasPending == true) then
+		for button in self:EnumerateAllTalentButtons() do
+			if button.UpdateActionBarStatus then button:UpdateActionBarStatus() end
+		end
+	end
 end
 
+-- As Blizzard's class panel (Blizzard_ClassTalentsFrame.lua:388-425, which overrides the base mixin's): every update
+-- to the shown config reloads it and ends a commit, not only while one is in progress.
 function Frame:OnTraitConfigUpdated(configID)
 	if self.mode ~= "player" or configID ~= self:GetConfigID() then return end
 	self:SetConfigID(configID, true)
@@ -797,7 +832,7 @@ function Frame:OnApplyStarted()
 	if self:IsShown() and self.mode == "player" and self:GetConfigID() == C_ClassTalents.GetActiveConfigID() then
 		self:SetCommitStarted(self:GetConfigID(), TalentFrameBaseMixin.CommitUpdateReasons.CommitStarted)
 	end
-	ns.Menus.Refresh()
+	ns.Flyout.Close()
 end
 
 function Frame:OnApplyFinished()
@@ -806,181 +841,30 @@ function Frame:OnApplyFinished()
 	end
 end
 
--- Commit visuals (Blizzard_ClassTalentsFrame.lua:940-1114, without hero talents) -----------------------------------
-
-function Frame:SetCommitStarted(configID, reason, skipAnimation)
-	if configID then
-		local purchases, _, swaps = C_Traits.GetStagedChanges(self:GetConfigID())
-		local gained = purchases or {}
-		if swaps then tAppendAll(gained, swaps) end
-		self.stagedPurchaseNodes = #gained > 0 and gained or nil
-	end
-	TalentFrameBaseMixin.SetCommitStarted(self, configID, reason, skipAnimation)
-	local ongoing = configID and reason ~= TalentFrameBaseMixin.CommitUpdateReasons.InstantCommit
-	if not ongoing and not self.commitCompleteVisualsActive then
-		self.stagedPurchaseNodes = nil
-	end
-	self:UpdateConfigButtonsState()
-end
-
-function Frame:SetCommitVisualsActive(active, reason, skipSpinnerDelay)
-	TalentFrameBaseMixin.SetCommitVisualsActive(self, active, reason, skipSpinnerDelay)
-	if (active and not self:IsVisible()) or self.commitVisualsActive == active then return end
-	if not active and reason == TalentFrameBaseMixin.VisualsUpdateReasons.FrameHidden then return end
-	if active then
-		self:PlayPurchaseEffectOnNodes(self.stagedPurchaseNodes, "PlayPurchaseInProgressEffect", { NODE_PURCHASE_IN_PROGRESS_FX_1 })
-	else
-		self.FxModelScene:ClearEffects()
-		self:StopPurchaseEffectOnNodes(self.stagedPurchaseNodes, "StopPurchaseInProgressEffect")
-	end
-	self.commitVisualsActive = active and self.stagedPurchaseNodes ~= nil
-end
-
-function Frame:SetCommitCompleteVisualsActive(active)
-	TalentFrameBaseMixin.SetCommitCompleteVisualsActive(self, active)
-	if (active and not self:IsVisible()) or self.commitCompleteVisualsActive == active then return end
-	self.commitCompleteVisualsActive = active
-	for _, animGroup in ipairs(self.commitFlashAnims) do
-		if animGroup:IsPlaying() ~= active then
-			if active then animGroup:Restart() else animGroup:Stop() end
-		end
-	end
-	if active then
-		if self.stagedPurchaseNodes and not self.stagedPurchaseTimer then
-			self.stagedPurchaseTimer = C_Timer.NewTimer(PURCHASE_FX_DELAY, function()
-				self.stagedPurchaseTimer = nil
-				self.commitCompleteVisualsActive = false
-				if not self.stagedPurchaseNodes then return end
-				self:PlayPurchaseEffectOnNodes(self.stagedPurchaseNodes, "PlayPurchaseCompleteEffect", { NODE_PURCHASE_COMPLETE_FX_1 })
-				PlaySound(SOUNDKIT.UI_CLASS_TALENT_APPLY_COMPLETE)
-				self.stagedPurchaseNodes = nil
-			end)
-		elseif not self.stagedPurchaseNodes then
-			self.commitCompleteVisualsActive = false
-		end
-	else
-		if self.stagedPurchaseTimer then
-			self.stagedPurchaseTimer:Cancel()
-			self.stagedPurchaseTimer = nil
-		end
-		self.FxModelScene:ClearEffects()
-		self:StopPurchaseEffectOnNodes(self.stagedPurchaseNodes, "StopPurchaseCompleteEffect")
-	end
-end
-
-function Frame:PlayPurchaseEffectOnNodes(nodes, method, fxIDs)
-	if not nodes then return end
-	local handled = {}
-	for _, nodeID in ipairs(nodes) do
-		if not handled[nodeID] then
-			handled[nodeID] = true
-			local button = self:GetTalentButtonByNodeID(nodeID)
-			if button and button[method] then
-				button[method](button, self.FxModelScene, fxIDs)
-			end
-		end
-	end
-end
-
-function Frame:StopPurchaseEffectOnNodes(nodes, method)
-	if nodes then
-		for _, nodeID in ipairs(nodes) do
-			local button = self:GetTalentButtonByNodeID(nodeID)
-			if button and button[method] then button[method](button) end
-		end
-	else
-		for button in self:EnumerateAllTalentButtons() do
-			if button[method] then button[method](button) end
-		end
-	end
-end
-
--- Spec switching (Camelot ClassTalentActiveSpecMixin calls these). No cast bar overlay: see the XML.
+-- Spec switching (Camelot ClassTalentActiveSpecMixin calls these). No cast bar overlay: see the XML. Ended by
+-- ACTIVE_COMBAT_CONFIG_CHANGED, a failed or interrupted cast (OnEvent), or closing the window.
 function Frame:SetSpecSwitchCastBarActive(active)
+	self.tmtSpecSwitching = active or nil
 	self:SetCommitSpinnerShown(active)
 end
 
 -- What the button templates ask of the panel -------------------------------------------------------------------------
 
--- A template's talents aren't learned, so no "not on your action bars" hints for them.
+-- Whether to leave out the talents' "not on your action bars" hints: on a template, whose talents aren't learned, and
+-- on your own while changes are staged (not learned yet), as Blizzard's panel means to. Forever's own panel passes an
+-- undefined variable there (Blizzard_ClassTalentsFrame.lua:1342, build 70938), so its hints stay on while staging.
 function Frame:HasAnyPendingChanges()
-	return self.mode == "template"
-end
-
-function Frame:IsHighlightedStarterBuildEntry()
-	return false
-end
-
-function Frame:IsHeroSpecActive()
-	return false
-end
-
-function Frame:IsPreviewingSubTree()
-	return false
+	return self.mode == "template" or self.tmtPending == true
 end
 
 function Frame:GetClassID()
 	return CLASS_IDS[self:GetShownClass()]
 end
 
-function Frame:GetDefinitionInfoForEntry(entryID)
-	local definitionID = self:GetAndCacheEntryInfo(entryID).definitionID
-	return definitionID and self:GetAndCacheDefinitionInfo(definitionID) or nil
-end
-
-function Frame:GetSubTreeInfoForEntry(entryID)
-	local subTreeID = self:GetAndCacheEntryInfo(entryID).subTreeID
-	return subTreeID and self:GetAndCacheSubTreeInfo(subTreeID) or nil
-end
-
--- Search options (Camelot ClassTalentsFrame.lua:266-327).
-function Frame:InitializeSearchOptionsDropdown()
-	self.hidePassivesFromSearch = false
-	self.showRanksInSearch = false
-	self.SearchOptionsDropdown:SetupMenu(function(_, rootDescription)
-		rootDescription:CreateCheckbox(CLASS_TALENT_SEARCH_OPTION_HIDE_PASSIVES,
-			function() return self.hidePassivesFromSearch end,
-			function() self.hidePassivesFromSearch = not self.hidePassivesFromSearch end)
-		rootDescription:CreateCheckbox(CLASS_TALENT_SEARCH_OPTION_SHOW_RANKS,
-			function() return self.showRanksInSearch end,
-			function() self.showRanksInSearch = not self.showRanksInSearch end)
-	end)
-end
-
-function Frame:TransformPreviewResults(previewResults)
-	if not self.hidePassivesFromSearch and not self.showRanksInSearch then
-		return previewResults
-	end
-	local filtered = {}
-	for _, resultInfo in ipairs(previewResults) do
-		local definitionInfo = self:GetDefinitionInfoForEntry(resultInfo.resultID)
-		local spellID = definitionInfo and definitionInfo.spellID
-		if not (self.hidePassivesFromSearch and spellID and C_Spell.IsSpellPassive(spellID)) then
-			if self.showRanksInSearch and resultInfo.nodeID then
-				local nodeInfo = self:GetAndCacheNodeInfo(resultInfo.nodeID)
-				if nodeInfo then
-					resultInfo = CopyTable(resultInfo)
-					resultInfo.searchName = resultInfo.name
-					resultInfo.name = resultInfo.name .. " (" .. nodeInfo.ranksPurchased .. "/" .. nodeInfo.maxRanks .. ")"
-				end
-			end
-			table.insert(filtered, resultInfo)
-		end
-	end
-	return filtered
-end
-
-function Frame:OnPreviewSearchResultClicked(resultInfo)
-	if resultInfo and resultInfo.searchName then
-		resultInfo = CopyTable(resultInfo)
-		resultInfo.name = resultInfo.searchName
-	end
-	ClassTalentSearchMixin.OnPreviewSearchResultClicked(self, resultInfo)
-end
-
--- Options changed: redo the layout and the Talented style.
 function Frame:ApplySettings()
 	self:UpdateConfigButtonsState()
+	-- Before the layout, which measures the label beside the number.
+	self:RefreshCurrencyDisplay()
 	ns.TalentedStyle.Apply(self)
 	self:ApplyLayout()
 end
