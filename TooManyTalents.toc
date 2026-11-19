@@ -4,7 +4,7 @@
 ## Version: @project-version@
 ## Notes: The game's talent window with templates, targets, sharing and inspecting, a more compact layout, and Talented's old look
 ## Category: Interface Enhancements
-## IconTexture: Interface\Icons\Ability_Marksmanship
+## IconTexture: Interface\Icons\INV_7XP_Inscription_TalentTome01
 ## X-Curse-Project-ID: 1814733
 ## SavedVariables: TooManyTalentsDB
 ## OptionalDeps: Ace3
