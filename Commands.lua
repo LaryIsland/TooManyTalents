@@ -10,7 +10,7 @@ SlashCmdList.TOOMANYTALENTS = function(input)
 		ns.Toggle()
 	elseif command == "options" then
 		local frame = ns.GetFrame()
-		if not frame then return end
+		if not frame or ns.BlizzardShowsLink() then return end
 		frame:GetParent():Show()
 		ns.Options.Show(frame)
 	else

@@ -64,6 +64,8 @@ L["APPLY_SLOW"] = "Learning talents is taking longer than expected. Check your t
 L["DEFAULT_NEW_NAME"] = "New template"
 L["DEFAULT_COPY_NAME"] = "%s (copy)"
 L["DEFAULT_CURRENT_NAME"] = "My talents"
+L["LINKED_BUILD_NAME"] = "%s talents"
+L["LINK_FAILED"] = "That talent link can't be shown."
 L["DELETE_CONFIRM"] = "Delete the template \"%s\"?"
 L["NAME_TAKEN"] = "There's already a template called \"%s\"."
 L["NAME_BOX_HINT"] = "Template name"
@@ -91,9 +93,16 @@ L["OPT_OLD_ARROWS"] = "Old arrows"
 L["OPT_HIDE_BOTTOM_BAR"] = "Remove the bottom bar"
 L["OPT_HIDE_SEARCH"] = "Remove the search box"
 L["OPT_POINTS_IN_TAB_ROW"] = "Unspent points in the tab row"
+L["OPT_TEMPLATE_LEVEL"] = "Level required on templates"
 
--- If the talent window fails to build (an error in it), once per session: the key opens the game's own window instead.
-L["WINDOW_FAILED"] = "TooManyTalents couldn't open its talent window, so the game's own is used until you reload."
+-- With that option, the label beside the number on a template, in place of the game's "Unspent Talents".
+L["LEVEL_REQUIRED_LABEL"] = "Level Required"
+
+-- If the talent window fails to build (an error in it), once per session: the key opens the Blizzard's window instead.
+L["WINDOW_FAILED"] = "TooManyTalents couldn't open its talent window, so Blizzard's is used until you reload."
+-- Straight after it, when the cause is a game update changing the game's talent window code ours is built on. %s: the
+-- names of what's missing, for a bug report.
+L["WINDOW_FAILED_MISSING"] = "A game update changed the talent window it's built on. Missing: %s"
 
 -- Slash command -----------------------------------------------------------------------------------------------------
 

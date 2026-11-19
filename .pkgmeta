@@ -9,6 +9,10 @@ externals:
   libs/AceDB-3.0: https://repos.wowace.com/wow/ace3/trunk/AceDB-3.0
   libs/AceLocale-3.0: https://repos.wowace.com/wow/ace3/trunk/AceLocale-3.0
 
+# Images holds the README's screenshots.
+ignore:
+  - Images
+
 # The release notes on CurseForge and GitHub, instead of a list of commit messages.
 manual-changelog:
   filename: CHANGELOG.md

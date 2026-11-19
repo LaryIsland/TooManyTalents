@@ -170,6 +170,7 @@ end
 -- Blizzard's window is touched, so when ours can't open Blizzard's simply opens or stays, and
 -- nothing is hidden for a window that then doesn't come.
 function ns.CanOpen(class)
+	if ns.BlizzardShowsLink() then return false end
 	if not Build() then return false end
 	local ok, model = pcall(ns.Tree.Get, class or ns.PLAYER_CLASS)
 	return ok and model ~= nil
@@ -179,7 +180,19 @@ function ns.Toggle()
 	local frame = ns.GetFrame()
 	if not frame then return end
 	local window = frame:GetParent()
+	if not window:IsShown() and ns.BlizzardShowsLink() then return end
 	window:SetShown(not window:IsShown())
+end
+
+-- Whether Blizzard's window is showing a talent link, which it does through the view config we use: one clicked in
+-- combat (Blizzard's window can't be hidden then) or one we couldn't read. Ours stays shut until Blizzard's closes:
+-- opening it would load the view config under Blizzard's window, the action bar taint OpenBuildInOurs avoids. Showing
+-- it from the talent key in combat gives the game's "not in combat" message. (Its own window, opened by the link,
+-- closes ours: it's a center panel.)
+function ns.BlizzardShowsLink()
+	local blizzard = PlayerSpellsFrame
+	if not (blizzard and blizzard:IsShown() and blizzard.GetInspectString) then return false end
+	return (blizzard:GetInspectString()) ~= nil
 end
 
 -- When our window last closed. On Forever, Blizzard's talent window is a "center" UI panel
@@ -289,7 +302,9 @@ end
 local CLASS_BY_SPEC = {}
 for class, specID in pairs(ns.SPEC_BY_CLASS) do CLASS_BY_SPEC[specID] = class end
 
-function ns.ReadLink(linkOptions)
+-- A link's header, read without the view config: its class and level, and the stream left just past the header. Nil
+-- if it isn't a link we can read.
+local function ReadLinkHeader(linkOptions)
 	local reader, export = ClassTalentImportExportMixin, ExportUtil
 	if not (reader and reader.ReadLoadoutHeader and reader.ReadLoadoutContent and export and export.MakeImportDataStream) then
 		return
@@ -303,10 +318,22 @@ function ns.ReadLink(linkOptions)
 	ok, valid, version, specID = pcall(reader.ReadLoadoutHeader, reader, stream)
 	if not ok or not valid or version ~= C_Traits.GetLoadoutSerializationVersion() then return end
 	local class = CLASS_BY_SPEC[specID]
-	local model = class and ns.Tree.Get(class)
+	if not class then return end
+	return class, level, stream
+end
+
+-- Whether a link looks readable, from its header alone (see OpenBuildInOurs).
+function ns.LinkReadable(linkOptions)
+	return ReadLinkHeader(linkOptions) ~= nil
+end
+
+function ns.ReadLink(linkOptions)
+	local reader = ClassTalentImportExportMixin
+	local class, level, stream = ReadLinkHeader(linkOptions)
+	if not class then return end
+	local model = ns.Tree.Get(class)
 	if not model then return end
-	local content
-	ok, content = pcall(reader.ReadLoadoutContent, reader, stream, model.treeID)
+	local ok, content = pcall(reader.ReadLoadoutContent, reader, stream, model.treeID)
 	if not ok or type(content) ~= "table" then return end
 	local nodeIDs = C_Traits.GetTreeNodes(model.treeID) or {}
 	local ranks, choices, spent = {}, {}, 0
@@ -336,15 +363,30 @@ end
 -- window that did open stays (hiding a UI panel then isn't safe). If Blizzard's was refused (its ShowUIPanel needs
 -- secure code in combat), ours opens on the build instead: ours isn't a UI panel, so Show works then, as for the
 -- talent key.
-local function OpenBuildInOurs(read, ...)
+-- A link is the exception: Blizzard's window shows it through the view config we use, and reading the build can reload
+-- that config (Tree.Get, the first time a class is read). Blizzard's window then rebuilds itself inside our call
+-- (ClassTalentsFrameMixin:OnTraitConfigUpdated, for the config it shows), and closing it afterwards carries that taint
+-- into every action bar (its OnHide reads the rebuilt state, then writes the bars' showAllButtons), so a bar changing
+-- in combat later is blocked (BugGrabber and an in-game probe, 18 Nov). So `readable`, if given, checks the build without
+-- the view config, and Blizzard's window is closed before the build is read; if it then can't be, the game's error
+-- message says so, as Blizzard's window has gone.
+local function OpenBuildInOurs(read, readable, ...)
 	local blizzard = PlayerSpellsFrame
 	local blizzardShown = blizzard and blizzard:IsShown()
 	if blizzardShown and InCombatLockdown() then return end
+	local closedFirst = blizzardShown and readable ~= nil
+	if closedFirst then
+		if not readable(...) then return end
+		HideUIPanel(blizzard)
+	end
 	local build = read(...)
-	if not build or not ns.CanOpen(build.class) then return end
+	if not build or not ns.CanOpen(build.class) then
+		if closedFirst then UIErrorsFrame:AddExternalErrorMessage(ns.L.LINK_FAILED) end
+		return
+	end
 	local window = ns.GetFrame():GetParent()
 	if blizzardShown then
-		HideUIPanel(blizzard)
+		if not closedFirst then HideUIPanel(blizzard) end
 		ShowAfterBlizzard(window)
 	else
 		window:Show()
@@ -356,13 +398,13 @@ end
 -- Inspect Talents (right-click a player, Interact) waits for the inspect data, then calls
 -- PlayerSpellsUtil.OpenToClassTalentsTab(unit); the build is read while the inspect data is still there.
 local function AfterBlizzardInspect(inspectUnit)
-	if inspectUnit then OpenBuildInOurs(ns.ReadInspected, inspectUnit) end
+	if inspectUnit then OpenBuildInOurs(ns.ReadInspected, nil, inspectUnit) end
 end
 
 -- A talent link clicked in chat calls PlayerSpellsUtil.InspectLoadout(linkOptions) (ItemRefHandlers.lua). Blizzard
 -- allows one handler per link type, so this is a post-hook too.
 local function AfterBlizzardLink(linkOptions)
-	OpenBuildInOurs(ns.ReadLink, linkOptions)
+	OpenBuildInOurs(ns.ReadLink, ns.LinkReadable, linkOptions)
 end
 
 ns.On("PLAYER_LOGIN", function()
