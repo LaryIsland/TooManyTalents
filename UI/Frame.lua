@@ -164,6 +164,10 @@ function Frame:OnLoad()
 		box:SetText(template and template.name or "")
 	end)
 
+	-- Blizzard's Activate asks for the spec group of the panel's selected tab (ClassTalentActiveSpecMixin:ActivateSpec,
+	-- GetTab()), but our one spec tab's ID is always 1: ours activates the group on show.
+	self.ActiveSpec.ActivateButton:SetOnClickHandler(GenerateClosure(self.ActivateShownSpecGroup, self))
+
 	self.DisabledOverlay:ClearAllPoints()
 	self.DisabledOverlay:SetPoint("TOPLEFT", self.ClassBackground, "TOPLEFT")
 	self.DisabledOverlay:SetPoint("BOTTOMRIGHT", self.ClassBackground, "BOTTOMRIGHT")
@@ -329,14 +333,14 @@ function Frame:ShowPlayerTalents(specGroup)
 	self:UpdateClassVisuals()
 	if configID then
 		self:SetDisabledOverlayShown(false)
-		self.ActiveSpec:SetGlow(false)
 		self:SetConfigID(configID, true)
 	else
 		-- The second spec isn't unlocked: Blizzard's panel greys the tree and highlights Activate.
 		self:SetDisabledOverlayShown(true)
-		self.ActiveSpec:SetGlow(true)
 	end
 	self:RefreshChrome()
+	-- After RefreshChrome, which may show the spec control (its OnShow turns the glow off).
+	self.ActiveSpec:SetGlow(not configID)
 	self:NoteView("player" .. specGroup)
 end
 
@@ -443,7 +447,8 @@ function Frame:RefreshChrome()
 	else
 		nameBox:SetTextColor(unpack(nameBox.tmtTextColor))
 	end
-	self.ActiveSpec:SetShown(not isTemplate and GetNumSpecGroups() > 1)
+	-- Only Activate, on your other spec group: the spec tab already says which group is shown (no "Active" label).
+	self.ActiveSpec:SetShown(not isTemplate and GetNumSpecGroups() > 1 and not self:IsActiveTabSelected())
 	self.ActiveSpec:Refresh()
 	self:UpdateTabs()
 	self:UpdateConfigButtonsState()
@@ -465,6 +470,11 @@ function Frame:UpdateTabs()
 		self.TabSystem:MarkDirty()
 	end
 	tab:SetIsActive(group == ns.ActiveSpecGroup())
+	-- Blizzard's tab system disables the selected tab (TabSystemTemplates.lua SetTabSelected), but ours is clicked
+	-- again to switch spec group, so it stays clickable while selected with dual spec.
+	if self.mode == "player" and GetNumSpecGroups() > 1 then
+		tab:SetEnabled(true)
+	end
 end
 
 -- Tabs: the spec tab switches to the other spec group (with dual spec), or from a template back to your talents;
@@ -480,6 +490,8 @@ function Frame:SetTab(tabID)
 	elseif GetNumSpecGroups() > 1 then
 		self:ShowPlayerTalents(self.specGroup == 2 and 1 or 2)
 	end
+	-- ShowPlayerTalents has selected the tab already; the tab system selecting it again would disable it.
+	return true
 end
 
 -- Editing ---------------------------------------------------------------------------------------------------------
@@ -846,6 +858,14 @@ end
 function Frame:SetSpecSwitchCastBarActive(active)
 	self.tmtSpecSwitching = active or nil
 	self:SetCommitSpinnerShown(active)
+end
+
+-- The Activate button: as Blizzard's ActivateSpec, for the spec group on show.
+function Frame:ActivateShownSpecGroup()
+	if self.mode ~= "player" or self:IsActiveTabSelected() then return end
+	self:SetDisabledOverlayShown(true)
+	self:SetSpecSwitchCastBarActive(true)
+	C_SpecializationInfo.SetActiveSpecGroup(self.specGroup)
 end
 
 -- What the button templates ask of the panel -------------------------------------------------------------------------

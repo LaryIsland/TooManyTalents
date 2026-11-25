@@ -52,6 +52,7 @@ Contract.LIST = {
 		"ButtonsParent", "DisabledOverlay", "BackgroundFlash", "ClassCurrencyDisplay.SetAmount",
 		"ClassCurrencyDisplay.UnspentLabel", "ClassCurrencyDisplay.Border",
 		"ClassCurrencyDisplay.CurrentAmountContainer.CurrencyAmount", "ActiveSpec.SetGlow", "ActiveSpec.Refresh",
+		"ActiveSpec.ActivateButton.SetOnClickHandler",
 		"TabSystem.tabs", "TabSystem.GetTabButton", "TabSystem.MarkDirty", "TabSystem.Layout",
 		"TabSystem.SetTabVisuallySelected", "ApplyButton.SetOnClickHandler", "ApplyButton.SetDisabledTooltip",
 		"ApplyButton.YellowGlow", "UndoButton.SetOnClickHandler", "SearchPreviewContainer",
